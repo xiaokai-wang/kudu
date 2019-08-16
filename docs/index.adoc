@@ -112,7 +112,7 @@ pattern-based compression can be orders of magnitude more efficient than
 compressing mixed data types, which are used in row-based solutions. Combined
 with the efficiencies of reading data from columns, compression allows you to
 fulfill your query while reading even fewer blocks from disk. See
-<<schema_design.adoc#encoding Data Compression>>
+<<schema_design.adoc#encoding,Data Compression>>
 
 .Table
 

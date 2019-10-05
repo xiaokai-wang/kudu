@@ -545,10 +545,10 @@ build_lz4() {
   CFLAGS="$EXTRA_CFLAGS" \
     cmake \
     -DCMAKE_BUILD_TYPE=release \
-    -DBUILD_TOOLS=0 \
+    -DBUILD_STATIC_LIBS=On \
     -DCMAKE_INSTALL_PREFIX:PATH=$PREFIX \
     $EXTRA_CMAKE_FLAGS \
-    $LZ4_SOURCE/cmake_unofficial
+    $LZ4_SOURCE/contrib/cmake_unofficial
   ${NINJA:-make} -j$PARALLEL $EXTRA_MAKEFLAGS install
   popd
 }
@@ -866,10 +866,16 @@ build_boost() {
 
   # If CC and CXX are set, set the compiler in user-config.jam.
   if [ -n "$CC" -a -n "$CXX" ]; then
-    # Determine the name of the compiler referenced in $CC. This assumes the compiler
-    # prints its name as the first word of the first line, which appears to work for gcc
-    # and clang, even when they're called through ccache.
-    local COMPILER=$($CC --version | awk 'NR==1 {print $1;}')
+    # Determine the name of the compiler referenced in $CC. This assumes
+    # the compiler prints its name in the first line of the output. The pattern
+    # matching works for various flavors of GCC and LLVM clang. As the last
+    # resort, output the first word of the first line. The '$CC --version'
+    # approach appears to work even if the compiler is called through ccache.
+    local COMPILER=$($CC --version | \
+      awk '/(Apple )?(clang|LLVM) version [[:digit:]]+\.[[:digit:]]+/ {
+             print "clang"; exit }
+           /\(GCC\) [[:digit:]]+\.[[:digit:]]+/{ print "gcc"; exit }
+           { print $1; exit }')
 
     # If the compiler binary used was 'cc' and not 'gcc', it will also report
     # itself as 'cc'. Coerce it to gcc.
@@ -997,4 +1003,44 @@ build_yaml() {
     ${NINJA:-make} -j$PARALLEL $EXTRA_MAKEFLAGS install
     popd
   done
+}
+
+build_chrony() {
+  CHRONY_BDIR=$TP_BUILD_DIR/$CHRONY_NAME$MODE_SUFFIX
+  mkdir -p $CHRONY_BDIR
+  pushd $CHRONY_BDIR
+
+  # The configure script for chrony doesn't follow the common policy of
+  # the autogen tools (probably, it's manually written from scratch).
+  # It's not possible to configure and build chrony in a separate directory;
+  # it's necessary to do so in the source directory itself.
+  rsync -av --delete $CHRONY_SOURCE/ .
+
+  # In the scope of using chrony in Kudu test framework, it's better to have
+  # leaner binaries for chronyd and chronyc, stripping off everything but
+  # essential functionality.
+  CFLAGS="$EXTRA_CFLAGS" \
+    CXXFLAGS="$EXTRA_CXXFLAGS" \
+    LDFLAGS="$EXTRA_LDFLAGS" \
+    LIBS="$EXTRA_LIBS" \
+    ./configure \
+    --prefix=$PREFIX \
+    --sysconfdir=$PREFIX/etc \
+    --localstatedir=$PREFIX/var \
+    --enable-debug \
+    --disable-ipv6 \
+    --disable-pps \
+    --disable-privdrop \
+    --disable-readline \
+    --without-editline \
+    --without-nettle \
+    --without-nss \
+    --without-tomcrypt \
+    --without-libcap \
+    --without-seccomp \
+    --disable-forcednsretry \
+    --disable-sechash
+
+  make -j$PARALLEL $EXTRA_MAKEFLAGS install
+  popd
 }

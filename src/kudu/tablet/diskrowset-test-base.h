@@ -175,6 +175,40 @@ class TestRowSet : public KuduRowSetTest {
     return MutateRow(rs, row_idx, RowChangeList(update_buf), result);
   }
 
+  Status ConditionalUpdateRow(DiskRowSet *rs,
+                              uint32_t row_idx,
+                              uint32_t new_val,
+                              OperationResultPB* result,
+                              UpdatingType updatingType)  {
+    ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
+    columnStorageAttributes.updating = updatingType;
+    ColumnSchema columnSchema = ColumnSchema("val", UINT32, false, NULL,
+                                             NULL, columnStorageAttributes);
+    SchemaBuilder builder;
+    CHECK_OK(builder.AddKeyColumn("key", STRING));
+    CHECK_OK(builder.AddColumn(columnSchema, false));
+    Schema schema_(builder.Build());
+
+    faststring update_buf;
+    RowChangeListEncoder update(&update_buf);
+    update.Reset();
+    update.AddColumnUpdate(schema_.column(1), schema_.column_id(1), &new_val);
+
+    return MutateRow(rs, row_idx, RowChangeList(update_buf), result);
+  }
+
+  Status ForceUpdateRow(DiskRowSet *rs,
+                        uint32_t row_idx,
+                        uint32_t new_val,
+                        OperationResultPB* result)  {
+    faststring update_buf;
+    RowChangeListEncoder update(&update_buf);
+    update.Reset();
+    update.AddColumnOverwrite(schema_.column(1), schema_.column_id(1), &new_val);
+
+    return MutateRow(rs, row_idx, RowChangeList(update_buf), result);
+  }
+
   // Mutate the given row.
   Status MutateRow(DiskRowSet *rs,
                    uint32_t row_idx,
@@ -256,6 +290,37 @@ class TestRowSet : public KuduRowSetTest {
   // asserting that the result matches 'expected_val'.
   void VerifyRandomRead(const DiskRowSet& rs, const Slice& row_key,
                         const std::string& expected_val) {
+    Arena arena(256);
+    AutoReleasePool pool;
+    ScanSpec spec;
+    auto pred = ColumnPredicate::Equality(schema_.column(0), &row_key);
+    spec.AddPredicate(pred);
+    spec.OptimizeScan(schema_, &arena, &pool, true);
+
+    RowIteratorOptions opts;
+    opts.projection = &schema_;
+    std::unique_ptr<RowwiseIterator> row_iter;
+    CHECK_OK(rs.NewRowIterator(opts, &row_iter));
+    CHECK_OK(row_iter->Init(&spec));
+    std::vector<std::string> rows;
+    IterateToStringList(row_iter.get(), &rows);
+    std::string result = JoinStrings(rows, "\n");
+    ASSERT_EQ(expected_val, result);
+  }
+
+  void ConditionalVerifyRandomRead(const DiskRowSet& rs, const Slice& row_key,
+                                   const std::string& expected_val,
+                                   UpdatingType updatingType,
+                                   Timestamp timestamp) {
+    ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
+    columnStorageAttributes.updating = updatingType;
+    ColumnSchema columnSchema = ColumnSchema("val", UINT32, false, NULL,
+                                             NULL, columnStorageAttributes);
+    SchemaBuilder builder;
+    CHECK_OK(builder.AddKeyColumn("key", STRING));
+    CHECK_OK(builder.AddColumn(columnSchema, false));
+    Schema schema_(builder.Build());
+
     Arena arena(256);
     AutoReleasePool pool;
     ScanSpec spec;

@@ -77,6 +77,14 @@ Status DeltaStats::UpdateStats(const Timestamp& timestamp,
       }
       break;
     }
+    case RowChangeList::kOverwrite: {
+      vector<ColumnId> col_ids;
+      RETURN_NOT_OK(decoder.GetIncludedColumnIds(&col_ids));
+      for (const ColumnId& col_id : col_ids) {
+        IncrUpdateCount(col_id, 1);
+      }
+      break;
+    }
     case RowChangeList::kDelete: {
       IncrDeleteCount(1);
       break;

@@ -316,15 +316,20 @@ Status DeltaPreparer<Traits>::AddDelta(const DeltaKey& key, Slice val, bool* fin
         }
         int col_size = opts_.projection->column(col_idx).type_info()->size();
 
-        // If we already have an earlier update for the same column, we can
-        // just overwrite that one.
-        if (updates_by_col_[col_idx].empty() ||
-            updates_by_col_[col_idx].back().row_id != key.row_idx()) {
+        if (opts_.projection->column(col_idx).GetUpdatingType() == OVERWRITE) {
+          // If we already have an earlier update for the same column, we can
+          // just overwrite that one.
+          if (updates_by_col_[col_idx].empty() ||
+              updates_by_col_[col_idx].back().row_id != key.row_idx()) {
+            updates_by_col_[col_idx].emplace_back();
+          }
+        } else {
           updates_by_col_[col_idx].emplace_back();
         }
 
         ColumnUpdate& cu = updates_by_col_[col_idx].back();
         cu.row_id = key.row_idx();
+        cu.force_overwrite = decoder.is_overwrite();
         if (col_val == nullptr) {
           cu.new_val_ptr = nullptr;
         } else {
@@ -395,7 +400,37 @@ Status DeltaPreparer<Traits>::ApplyUpdates(size_t col_to_apply, ColumnBlock* dst
     }
     SimpleConstCell src(col_schema, cu.new_val_ptr);
     ColumnBlock::Cell dst_cell = dst->cell(idx_in_block);
-    RETURN_NOT_OK(CopyCell(src, &dst_cell, dst->arena()));
+    if (cu.force_overwrite) {
+      RETURN_NOT_OK(CopyCell(src, &dst_cell, dst->arena()));
+
+    } else {
+      switch (col_schema->GetUpdatingType()) {
+        case OVERWRITE:
+          RETURN_NOT_OK(CopyCell(src, &dst_cell, dst->arena()));
+          break;
+        case KEEP_MAX:
+          if (!dst_cell.is_nullable()) {
+            if (col_schema->Compare(src.ptr(), dst_cell.mutable_ptr()) > 0) {
+              RETURN_NOT_OK(CopyCell(src, &dst_cell, dst->arena()));
+            }
+          } else {
+            RETURN_NOT_OK(CopyCell(src, &dst_cell, dst->arena()));
+          }
+          break;
+        case KEEP_MIN:
+          if (!dst_cell.is_nullable()) {
+            if (col_schema->Compare(src.ptr(), dst_cell.mutable_ptr()) < 0) {
+              RETURN_NOT_OK(CopyCell(src, &dst_cell, dst->arena()));
+            }
+          } else {
+            RETURN_NOT_OK(CopyCell(src, &dst_cell, dst->arena()));
+          }
+          break;
+        default:
+          /* none */
+          break;
+      }
+    }
   }
 
   return Status::OK();

@@ -34,6 +34,7 @@
 #include "kudu/util/faststring.h"
 #include "kudu/util/slice.h"
 #include "kudu/util/status.h"
+#include "kudu/tablet/delta_key.h"
 
 namespace kudu {
 
@@ -134,7 +135,8 @@ class RowChangeList {
     kUpdate = 1,
     kDelete = 2,
     kReinsert = 3,
-    ChangeType_max = 3
+    kOverwrite = 4,
+    ChangeType_max = 4
   };
 
   static const char* ChangeType_Name(ChangeType t);
@@ -166,6 +168,10 @@ class RowChangeListEncoder {
     SetType(RowChangeList::kUpdate);
   }
 
+  void SetToOverwrite() {
+    SetType(RowChangeList::kOverwrite);
+  }
+
   void SetToReinsert() {
     SetType(RowChangeList::kReinsert);
   }
@@ -187,6 +193,9 @@ class RowChangeListEncoder {
                        int col_id,
                        const void* cell_ptr);
 
+  void AddColumnOverwrite(const ColumnSchema& col_schema,
+                          int col_id,
+                          const void* cell_ptr);
 
   RowChangeList as_changelist() {
     DCHECK_GT(dst_->size(), 0);
@@ -203,7 +212,8 @@ class RowChangeListEncoder {
   bool is_empty() {
     if (dst_->size() == 0) return true;
     return dst_->size() == 1 &&
-        (type_ == RowChangeList::kReinsert || type_ == RowChangeList::kUpdate);
+        (type_ == RowChangeList::kReinsert || type_ == RowChangeList::kUpdate
+         || type_ == RowChangeList::kOverwrite);
   }
 
   // Internal version of AddColumnUpdate which does not set type, allowing
@@ -317,6 +327,10 @@ class RowChangeListDecoder {
     return type_ == RowChangeList::kReinsert;
   }
 
+  bool is_overwrite() const {
+    return type_ == RowChangeList::kOverwrite;
+  }
+
   const RowChangeList::ChangeType get_type() const {
     DCHECK_NE(type_, RowChangeList::kUninitialized) << "Must call Init()";
     return type_;
@@ -325,7 +339,7 @@ class RowChangeListDecoder {
   // Append an entry to *column_ids for each column that is mutated in this RCL.
   // This 'consumes' the remainder of the encoded RowChangeList.
   Status GetIncludedColumnIds(std::vector<ColumnId>* column_ids) {
-    DCHECK(is_update() || is_reinsert());
+    DCHECK(is_update() || is_reinsert() || is_overwrite());
     column_ids->clear();
     while (HasNext()) {
       DecodedUpdate dec;
@@ -352,7 +366,8 @@ class RowChangeListDecoder {
   //
   // REQUIRES: is_update() or is_reinsert()
   Status ApplyToOneColumn(size_t row_idx, ColumnBlock* dst_col,
-                          const Schema& dst_schema, int col_idx, Arena *arena);
+                          const Schema& dst_schema, int col_idx, Arena *arena,
+                          tablet::DeltaType deltaType);
 
   // If this changelist is a DELETE or REINSERT, twiddle '*deleted' to reference
   // the new state of the row. If it is an UPDATE, this call has no effect.

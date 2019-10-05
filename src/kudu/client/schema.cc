@@ -55,6 +55,10 @@ MAKE_ENUM_LIMITS(kudu::client::KuduColumnStorageAttributes::CompressionType,
                  kudu::client::KuduColumnStorageAttributes::DEFAULT_COMPRESSION,
                  kudu::client::KuduColumnStorageAttributes::ZLIB);
 
+MAKE_ENUM_LIMITS(kudu::client::KuduColumnStorageAttributes::UpdatingType,
+                 kudu::client::KuduColumnStorageAttributes::OVERWRITE,
+                 kudu::client::KuduColumnStorageAttributes::KEEP_MIN);
+
 MAKE_ENUM_LIMITS(kudu::client::KuduColumnSchema::DataType,
                  kudu::client::KuduColumnSchema::INT8,
                  kudu::client::KuduColumnSchema::BOOL);
@@ -113,6 +117,25 @@ KuduColumnStorageAttributes::CompressionType FromInternalCompressionType(
     case kudu::LZ4: return KuduColumnStorageAttributes::LZ4;
     case kudu::ZLIB: return KuduColumnStorageAttributes::ZLIB;
     default: LOG(FATAL) << "Unexpected internal compression type: " << type;
+  }
+}
+
+kudu::UpdatingType ToInternalUpdatingType(KuduColumnStorageAttributes::UpdatingType type) {
+  switch (type) {
+    case KuduColumnStorageAttributes::OVERWRITE: return kudu::OVERWRITE;
+    case KuduColumnStorageAttributes::KEEP_MAX: return kudu::KEEP_MAX;
+    case KuduColumnStorageAttributes::KEEP_MIN: return kudu::KEEP_MIN;
+    default: LOG(FATAL) << "Unexpected updating type" << type;
+  }
+}
+
+KuduColumnStorageAttributes::UpdatingType FromInternalUpdatingType(
+    kudu::UpdatingType type) {
+  switch (type) {
+    case kudu::OVERWRITE: return KuduColumnStorageAttributes::OVERWRITE;
+    case kudu::KEEP_MAX: return KuduColumnStorageAttributes::KEEP_MAX;
+    case kudu::KEEP_MIN: return KuduColumnStorageAttributes::KEEP_MIN;
+    default: LOG(FATAL) << "Unexpected internal updating type: " << type;
   }
 }
 
@@ -242,6 +265,13 @@ KuduColumnSpec* KuduColumnSpec::Encoding(
   return this;
 }
 
+KuduColumnSpec* KuduColumnSpec::Updating(
+    KuduColumnStorageAttributes::UpdatingType updating) {
+  data_->has_updating = true;
+  data_->updating = updating;
+  return this;
+}
+
 KuduColumnSpec* KuduColumnSpec::BlockSize(int32_t block_size) {
   data_->block_size = block_size;
   return this;
@@ -359,6 +389,8 @@ Status KuduColumnSpec::ToColumnSchema(KuduColumnSchema* col) const {
       data_->encoding.value() : KuduColumnStorageAttributes::AUTO_ENCODING;
   KuduColumnStorageAttributes::CompressionType compression = data_->compression ?
       data_->compression.value() : KuduColumnStorageAttributes::DEFAULT_COMPRESSION;
+  KuduColumnStorageAttributes::UpdatingType updating = data_->updating ?
+      data_->updating.value() : KuduColumnStorageAttributes::OVERWRITE;
 
   // BlockSize: '0' signifies server-side default.
   int32_t block_size = data_->block_size ? data_->block_size.value() : 0;
@@ -367,7 +399,7 @@ Status KuduColumnSpec::ToColumnSchema(KuduColumnSchema* col) const {
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
   *col = KuduColumnSchema(data_->name, data_->type.value(), nullable,
                           default_val,
-                          KuduColumnStorageAttributes(encoding, compression, block_size),
+                          KuduColumnStorageAttributes(encoding, compression, updating, block_size),
                           type_attrs,
                           data_->comment ? data_->comment.value() : "");
 #pragma GCC diagnostic pop
@@ -404,6 +436,10 @@ Status KuduColumnSpec::ToColumnSchemaDelta(ColumnSchemaDelta* col_delta) const {
 
   if (data_->compression) {
     col_delta->compression = ToInternalCompressionType(data_->compression.value());
+  }
+
+  if (data_->updating) {
+    col_delta->updating = ToInternalUpdatingType(data_->updating.value());
   }
 
   col_delta->new_name = std::move(data_->rename_to);
@@ -716,6 +752,15 @@ KuduColumnSchema KuduSchema::Column(size_t idx) const {
   return KuduColumnSchema(col.name(), FromInternalDataType(col.type_info()->type()),
                           col.is_nullable(), col.read_default_value(),
                           attrs, type_attrs, col.comment());
+}
+
+bool KuduSchema::HasColumn(const std::string& col_name, KuduColumnSchema* col_schema) const {
+  int idx = schema_->find_column(col_name);
+  if (idx == Schema::kColumnNotFound) {
+    return false;
+  }
+  *col_schema = Column(idx);
+  return true;
 }
 
 KuduPartialRow* KuduSchema::NewRow() const {

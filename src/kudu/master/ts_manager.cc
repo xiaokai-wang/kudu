@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <limits>
 #include <mutex>
+#include <utility>
 
 #include <boost/optional/optional.hpp>
 #include <gflags/gflags.h>
@@ -33,6 +34,7 @@
 #include "kudu/gutil/port.h"
 #include "kudu/gutil/strings/substitute.h"
 #include "kudu/master/location_cache.h"
+#include "kudu/master/sys_catalog.h"
 #include "kudu/master/ts_descriptor.h"
 #include "kudu/util/flag_tags.h"
 #include "kudu/util/logging.h"
@@ -55,6 +57,8 @@ METRIC_DEFINE_gauge_int32(server, cluster_replica_skew,
                           "the least replicas.");
 
 using kudu::pb_util::SecureShortDebugString;
+using std::lock_guard;
+using std::unordered_set;
 using std::shared_ptr;
 using std::string;
 using strings::Substitute;
@@ -62,9 +66,32 @@ using strings::Substitute;
 namespace kudu {
 namespace master {
 
+class TServerStateLoader : public TServerStateVisitor {
+ public:
+  explicit TServerStateLoader(TSManager* ts_manager)
+      : ts_manager_(ts_manager) {}
+
+  Status Visit(const std::string& tserver_id,
+               const SysTServerStateEntryPB& metadata) override {
+    ts_manager_->ts_state_lock_.AssertAcquiredForWriting();
+    TServerStatePB state = metadata.state();
+    if (state == TServerStatePB::UNKNOWN_STATE) {
+      LOG(WARNING) << Substitute("ignoring unknown tserver state: $0", metadata.state());
+      return Status::OK();
+    }
+    DCHECK_NE(TServerStatePB::NONE, state);
+    InsertOrDie(&ts_manager_->ts_state_by_uuid_, tserver_id, state);
+    return Status::OK();
+  }
+
+ private:
+  TSManager* ts_manager_;
+};
+
 TSManager::TSManager(LocationCache* location_cache,
                      const scoped_refptr<MetricEntity>& metric_entity)
-    : location_cache_(location_cache) {
+    : ts_state_lock_(RWMutex::Priority::PREFER_READING),
+      location_cache_(location_cache) {
   METRIC_cluster_replica_skew.InstantiateFunctionGauge(
       metric_entity,
       Bind(&TSManager::ClusterSkew, Unretained(this)))
@@ -117,11 +144,11 @@ Status TSManager::RegisterTS(const NodeInstancePB& instance,
   // a location involves calling the location mapping script which is relatively
   // long and expensive operation.
   boost::optional<string> location;
-  if (PREDICT_TRUE(location_cache_ != nullptr)) {
+  if (location_cache_) {
     // In some test scenarios the location is assigned per tablet server UUID.
     // That's the case when multiple (or even all) tablet servers have the same
     // IP address for their RPC endpoint.
-    const auto& cmd_arg = FLAGS_location_mapping_by_uuid
+    const auto& cmd_arg = PREDICT_FALSE(FLAGS_location_mapping_by_uuid)
         ? uuid : registration.rpc_addresses(0).host();
     TRACE(Substitute("tablet server $0: assigning location", uuid));
     string location_str;
@@ -145,7 +172,7 @@ Status TSManager::RegisterTS(const NodeInstancePB& instance,
   shared_ptr<TSDescriptor> descriptor;
   bool new_tserver = false;
   {
-    std::lock_guard<rw_spinlock> l(lock_);
+    lock_guard<rw_spinlock> l(lock_);
     auto* descriptor_ptr = FindOrNull(servers_by_id_, uuid);
     if (descriptor_ptr) {
       descriptor = *descriptor_ptr;
@@ -172,22 +199,85 @@ void TSManager::GetAllDescriptors(TSDescriptorVector* descs) const {
   AppendValuesFromMap(servers_by_id_, descs);
 }
 
-void TSManager::GetAllLiveDescriptors(TSDescriptorVector* descs) const {
-  descs->clear();
+int TSManager::GetCount() const {
+  shared_lock<rw_spinlock> l(lock_);
+  return servers_by_id_.size();
+}
 
+unordered_set<string> TSManager::GetUuidsToIgnoreForUnderreplication() const {
+  unordered_set<string> uuids;
+  shared_lock<RWMutex> tsl(ts_state_lock_);
+  uuids.reserve(ts_state_by_uuid_.size());
+  for (const auto& ts_and_state : ts_state_by_uuid_) {
+    if (ts_and_state.second == TServerStatePB::MAINTENANCE_MODE) {
+      uuids.emplace(ts_and_state.first);
+    }
+  }
+  return uuids;
+}
+
+void TSManager::GetDescriptorsAvailableForPlacement(TSDescriptorVector* descs) const {
+  descs->clear();
+  shared_lock<RWMutex> tsl(ts_state_lock_);
   shared_lock<rw_spinlock> l(lock_);
   descs->reserve(servers_by_id_.size());
   for (const TSDescriptorMap::value_type& entry : servers_by_id_) {
     const shared_ptr<TSDescriptor>& ts = entry.second;
-    if (!ts->PresumedDead()) {
+    if (AvailableForPlacementUnlocked(*ts)) {
       descs->push_back(ts);
     }
   }
 }
 
-int TSManager::GetCount() const {
-  shared_lock<rw_spinlock> l(lock_);
-  return servers_by_id_.size();
+Status TSManager::SetTServerState(const string& ts_uuid,
+                                  TServerStatePB ts_state,
+                                  SysCatalogTable* sys_catalog) {
+  lock_guard<RWMutex> l(ts_state_lock_);
+  auto existing_state = FindWithDefault(ts_state_by_uuid_, ts_uuid, TServerStatePB::NONE);
+  if (existing_state == ts_state) {
+    return Status::OK();
+  }
+  if (ts_state == TServerStatePB::NONE) {
+    RETURN_NOT_OK_PREPEND(sys_catalog->RemoveTServerState(ts_uuid),
+        Substitute("Failed to remove tserver state for $0", ts_uuid));
+    ts_state_by_uuid_.erase(ts_uuid);
+    // If exiting maintenance mode, make sure that any replica failures that
+    // may have been ignored while in maintenance mode are reprocessed. To do
+    // so, request full tablet reports across all tablet servers.
+    SetAllTServersNeedFullTabletReports();
+    return Status::OK();
+  }
+  SysTServerStateEntryPB pb;
+  pb.set_state(ts_state);
+  RETURN_NOT_OK_PREPEND(sys_catalog->WriteTServerState(ts_uuid, pb),
+      Substitute("Failed to set tserver state for $0 to $1",
+                 ts_uuid, TServerStatePB_Name(ts_state)));
+  InsertOrUpdate(&ts_state_by_uuid_, ts_uuid, ts_state);
+  return Status::OK();
+}
+
+TServerStatePB TSManager::GetTServerStateUnlocked(const string& ts_uuid) const {
+  ts_state_lock_.AssertAcquired();
+  return FindWithDefault(ts_state_by_uuid_, ts_uuid, TServerStatePB::NONE);
+}
+
+TServerStatePB TSManager::GetTServerState(const string& ts_uuid) const {
+  shared_lock<RWMutex> l(ts_state_lock_);
+  return GetTServerStateUnlocked(ts_uuid);
+}
+
+Status TSManager::ReloadTServerStates(SysCatalogTable* sys_catalog) {
+  lock_guard<RWMutex> l(ts_state_lock_);
+  ts_state_by_uuid_ = {};
+  TServerStateLoader loader(this);
+  return sys_catalog->VisitTServerStates(&loader);
+}
+
+void TSManager::SetAllTServersNeedFullTabletReports() {
+  lock_guard<rw_spinlock> l(lock_);
+  for (auto& id_and_desc : servers_by_id_) {
+    id_and_desc.second->UpdateNeedsFullTabletReport(true);
+  }
 }
 
 int TSManager::ClusterSkew() const {
@@ -204,6 +294,17 @@ int TSManager::ClusterSkew() const {
     max_count = std::max(max_count, num_live_replicas);
   }
   return max_count - min_count;
+}
+
+bool TSManager::AvailableForPlacementUnlocked(const TSDescriptor& ts) const {
+  ts_state_lock_.AssertAcquired();
+  // TODO(KUDU-1827): this should also be used when decommissioning a server.
+  if (GetTServerStateUnlocked(ts.permanent_uuid()) == TServerStatePB::MAINTENANCE_MODE) {
+    return false;
+  }
+  // If the tablet server has heartbeated recently enough, it is considered
+  // alive and available for placement.
+  return !ts.PresumedDead();
 }
 
 } // namespace master

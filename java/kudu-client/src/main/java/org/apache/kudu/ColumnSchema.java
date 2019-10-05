@@ -23,6 +23,7 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.yetus.audience.InterfaceStability;
 
 import org.apache.kudu.Common.EncodingType;
+import org.apache.kudu.Common.UpdatingType;
 import org.apache.kudu.Compression.CompressionType;
 
 /**
@@ -40,6 +41,7 @@ public class ColumnSchema {
   private final Object defaultValue;
   private final int desiredBlockSize;
   private final Encoding encoding;
+  private final Updating updating;
   private final CompressionAlgorithm compressionAlgorithm;
   private final ColumnTypeAttributes typeAttributes;
   private final int typeSize;
@@ -76,6 +78,26 @@ public class ColumnSchema {
   }
 
   /**
+   * Specifies the updating of data for a column.
+   */
+  public enum Updating {
+    OVERWRITE(UpdatingType.OVERWRITE),
+    KEEP_MAX(UpdatingType.KEEP_MAX),
+    KEEP_MIN(UpdatingType.KEEP_MIN);
+
+    final UpdatingType internalPbType;
+
+    Updating(UpdatingType internalPbType) {
+      this.internalPbType = internalPbType;
+    }
+
+    @InterfaceAudience.Private
+    public UpdatingType getInternalPbType() {
+      return internalPbType;
+    }
+  }
+
+  /**
    * Specifies the compression algorithm of data for a column on disk.
    */
   @InterfaceAudience.Public
@@ -102,7 +124,7 @@ public class ColumnSchema {
 
   private ColumnSchema(String name, Type type, boolean key, boolean nullable,
                        Object defaultValue, int desiredBlockSize, Encoding encoding,
-                       CompressionAlgorithm compressionAlgorithm,
+                       Updating updating, CompressionAlgorithm compressionAlgorithm,
                        ColumnTypeAttributes typeAttributes, Common.DataType wireType,
                        String comment) {
     this.name = name;
@@ -112,6 +134,7 @@ public class ColumnSchema {
     this.defaultValue = defaultValue;
     this.desiredBlockSize = desiredBlockSize;
     this.encoding = encoding;
+    this.updating = updating;
     this.compressionAlgorithm = compressionAlgorithm;
     this.typeAttributes = typeAttributes;
     this.typeSize = type.getSize(typeAttributes);
@@ -182,6 +205,13 @@ public class ColumnSchema {
    */
   public CompressionAlgorithm getCompressionAlgorithm() {
     return compressionAlgorithm;
+  }
+
+  /**
+   * Return the updating of this column, or null if it is not known.
+   */
+  public Updating getUpdating() {
+    return updating;
   }
 
   /**
@@ -261,6 +291,7 @@ public class ColumnSchema {
     private Object defaultValue = null;
     private int desiredBlockSize = 0;
     private Encoding encoding = null;
+    private Updating updating = Updating.OVERWRITE;
     private CompressionAlgorithm compressionAlgorithm = null;
     private ColumnTypeAttributes typeAttributes = null;
     private Common.DataType wireType = null;
@@ -373,6 +404,11 @@ public class ColumnSchema {
       return this;
     }
 
+    public ColumnSchemaBuilder updating(Updating updating) {
+      this.updating = updating;
+      return this;
+    }
+
     /**
      * Set the column type attributes for this column.
      */
@@ -416,7 +452,7 @@ public class ColumnSchema {
       }
       return new ColumnSchema(name, type,
                               key, nullable, defaultValue,
-                              desiredBlockSize, encoding, compressionAlgorithm,
+                              desiredBlockSize, encoding, updating, compressionAlgorithm,
                               typeAttributes, wireType, comment);
     }
   }

@@ -106,9 +106,10 @@ string ColumnTypeAttributes::ToStringForType(DataType type) const {
 string ColumnStorageAttributes::ToString() const {
   const string cfile_block_size_str =
       cfile_block_size == 0 ? "" : Substitute(" $0", cfile_block_size);
-  return Substitute("$0 $1$2",
+  return Substitute("$0 $1 $2 $3",
                     EncodingType_Name(encoding),
                     CompressionType_Name(compression),
+                    UpdatingType_Name(updating),
                     cfile_block_size_str);
 }
 
@@ -142,6 +143,9 @@ Status ColumnSchema::ApplyDelta(const ColumnSchemaDelta& col_delta) {
   }
   if (col_delta.compression) {
     attributes_.compression = *col_delta.compression;
+  }
+  if (col_delta.updating) {
+    attributes_.updating = *col_delta.updating;
   }
   if (col_delta.cfile_block_size) {
     attributes_.cfile_block_size = *col_delta.cfile_block_size;

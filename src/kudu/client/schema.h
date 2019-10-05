@@ -132,6 +132,12 @@ class KUDU_EXPORT KuduColumnStorageAttributes {
     ZLIB = 4,
   };
 
+  /// @brief Column updating types.
+  enum UpdatingType {
+    OVERWRITE = 0,
+    KEEP_MAX = 1,
+    KEEP_MIN = 2,
+  };
 
   /// @deprecated This constructor is deprecated for external use, and will
   ///   be made private in a future release.
@@ -147,10 +153,12 @@ class KUDU_EXPORT KuduColumnStorageAttributes {
   explicit KuduColumnStorageAttributes(
       EncodingType encoding = AUTO_ENCODING,
       CompressionType compression = DEFAULT_COMPRESSION,
+      UpdatingType updating = OVERWRITE,
       int32_t block_size = 0)
       ATTRIBUTE_DEPRECATED("this constructor will be private in a future release")
       : encoding_(encoding),
         compression_(compression),
+        updating_(updating),
         block_size_(block_size) {
   }
 
@@ -164,12 +172,18 @@ class KUDU_EXPORT KuduColumnStorageAttributes {
     return compression_;
   }
 
+  /// @return Updating type for the column storage.
+  const UpdatingType updating() const {
+    return updating_;
+  }
+
   /// @return String representation of the storage attributes.
   std::string ToString() const;
 
  private:
   EncodingType encoding_;
   CompressionType compression_;
+  UpdatingType updating_;
   int32_t block_size_;
 };
 
@@ -322,6 +336,15 @@ class KUDU_EXPORT KuduColumnSpec {
   ///   The encoding to use.
   /// @return Pointer to the modified object.
   KuduColumnSpec* Encoding(KuduColumnStorageAttributes::EncodingType encoding);
+
+  /// Set the preferred updating for the column.
+  ///
+  /// @note Not all updatings are supported for all column types.
+  ///
+  /// @param [in] updating
+  ///   The updating to use.
+  /// @return Pointer to the modified object.
+  KuduColumnSpec* Updating(KuduColumnStorageAttributes::UpdatingType updating);
 
   /// Set the target block size for the column.
   ///
@@ -574,6 +597,13 @@ class KUDU_EXPORT KuduSchema {
   ///   Column index.
   /// @return Schema for the specified column.
   KuduColumnSchema Column(size_t idx) const;
+
+  /// @param [in] col_name
+  ///   Column name.
+  /// @param [out] col_schema.
+  ///   Schema for the specified column.
+  /// @return @c true iff the specified column exists.
+  bool HasColumn(const std::string& col_name, KuduColumnSchema* col_schema) const;
 
   /// @return The number of columns in the schema.
   size_t num_columns() const;

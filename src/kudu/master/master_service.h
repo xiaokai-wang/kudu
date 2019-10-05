@@ -38,6 +38,8 @@ namespace master {
 
 class AlterTableRequestPB;
 class AlterTableResponsePB;
+class ChangeTServerStateRequestPB;
+class ChangeTServerStateResponsePB;
 class ConnectToMasterRequestPB;
 class ConnectToMasterResponsePB;
 class CreateTableRequestPB;
@@ -50,6 +52,8 @@ class GetTableLocationsRequestPB;
 class GetTableLocationsResponsePB;
 class GetTableSchemaRequestPB;
 class GetTableSchemaResponsePB;
+class GetTableStatisticsRequestPB;
+class GetTableStatisticsResponsePB;
 class GetTabletLocationsRequestPB;
 class GetTabletLocationsResponsePB;
 class IsAlterTableDoneRequestPB;
@@ -96,6 +100,10 @@ class MasterServiceImpl : public MasterServiceIf {
                           google::protobuf::Message* resp,
                           rpc::RpcContext* context) override;
 
+  void ChangeTServerState(const ChangeTServerStateRequestPB* req,
+                          ChangeTServerStateResponsePB* resp,
+                          rpc::RpcContext* rpc) override;
+
   void Ping(const PingRequestPB* req,
             PingResponsePB* resp,
             rpc::RpcContext* rpc) override;
@@ -131,6 +139,10 @@ class MasterServiceImpl : public MasterServiceIf {
   void ListTables(const ListTablesRequestPB* req,
                   ListTablesResponsePB* resp,
                   rpc::RpcContext* rpc) override;
+
+  void GetTableStatistics(const GetTableStatisticsRequestPB* req,
+                          GetTableStatisticsResponsePB* resp,
+                          rpc::RpcContext* rpc) override;
 
   void GetTableLocations(const GetTableLocationsRequestPB* req,
                          GetTableLocationsResponsePB* resp,

@@ -372,6 +372,12 @@ void Messenger::QueueOutboundCall(const shared_ptr<OutboundCall> &call) {
 }
 
 void Messenger::QueueInboundCall(gscoped_ptr<InboundCall> call) {
+  // This lock acquisition spans the entirety of the function to avoid having to
+  // take a ref on the RpcService. In doing so, we guarantee that the service
+  // isn't shut down here, which would be problematic because shutdown is a
+  // blocking operation and QueueInboundCall is called by the reactor thread.
+  //
+  // See KUDU-2946 for more details.
   shared_lock<rw_spinlock> guard(lock_.get_lock());
   scoped_refptr<RpcService>* service = FindOrNull(rpc_services_,
                                                   call->remote_method().service_name());
@@ -427,7 +433,6 @@ Messenger::Messenger(const MessengerBuilder &bld)
 }
 
 Messenger::~Messenger() {
-  std::lock_guard<percpu_rwlock> guard(lock_);
   CHECK(closing_) << "Should have already shut down";
   STLDeleteElements(&reactors_);
 }
@@ -451,7 +456,6 @@ Status Messenger::Init() {
 
 Status Messenger::DumpConnections(const DumpConnectionsRequestPB& req,
                                   DumpConnectionsResponsePB* resp) {
-  shared_lock<rw_spinlock> guard(lock_.get_lock());
   for (Reactor* reactor : reactors_) {
     RETURN_NOT_OK(reactor->DumpConnections(req, resp));
   }

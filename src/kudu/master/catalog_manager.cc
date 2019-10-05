@@ -268,8 +268,22 @@ DEFINE_int32(catalog_manager_inject_latency_list_authz_ms, 0,
 TAG_FLAG(catalog_manager_inject_latency_list_authz_ms, hidden);
 TAG_FLAG(catalog_manager_inject_latency_list_authz_ms, unsafe);
 
+DEFINE_bool(mock_table_metrics_for_testing, false,
+            "Whether to enable mock table metrics for testing.");
+TAG_FLAG(mock_table_metrics_for_testing, hidden);
+TAG_FLAG(mock_table_metrics_for_testing, runtime);
+
+DEFINE_int64(on_disk_size_for_testing, 0,
+             "Mock the on disk size of metrics for testing.");
+TAG_FLAG(on_disk_size_for_testing, hidden);
+TAG_FLAG(on_disk_size_for_testing, runtime);
+
+DEFINE_int64(live_row_count_for_testing, 0,
+             "Mock the live row count of metrics for testing.");
+TAG_FLAG(live_row_count_for_testing, hidden);
+TAG_FLAG(live_row_count_for_testing, runtime);
+
 DECLARE_bool(raft_prepare_replacement_before_eviction);
-DECLARE_bool(raft_attempt_to_replace_replica_without_majority);
 DECLARE_int64(tsk_rotation_seconds);
 
 METRIC_DEFINE_entity(table);
@@ -283,9 +297,7 @@ using google::protobuf::Map;
 using kudu::cfile::TypeEncodingInfo;
 using kudu::consensus::ConsensusServiceProxy;
 using kudu::consensus::ConsensusStatePB;
-using kudu::consensus::GetConsensusRole;
 using kudu::consensus::IsRaftConfigMember;
-using kudu::consensus::MajorityHealthPolicy;
 using kudu::consensus::RaftConfigPB;
 using kudu::consensus::RaftConsensus;
 using kudu::consensus::RaftPeerPB;
@@ -1096,6 +1108,17 @@ void CatalogManager::PrepareForLeadershipTask() {
       }
     }
 
+    static const char* const kTServerStatesDescription =
+        "Initializing in-progress tserver states";
+    LOG(INFO) << kTServerStatesDescription << "...";
+    LOG_SLOW_EXECUTION(WARNING, 1000, LogPrefix() + kTServerStatesDescription) {
+      if (!check(std::bind(&TSManager::ReloadTServerStates, master_->ts_manager(),
+                           sys_catalog_.get()),
+                 *consensus, term, kTServerStatesDescription).ok()) {
+        return;
+      }
+    }
+
     if (hms_catalog_) {
       static const char* const kNotificationLogEventIdDescription =
           "Loading latest processed Hive Metastore notification log event ID";
@@ -1475,7 +1498,7 @@ Status CatalogManager::CreateTable(const CreateTableRequestPB* orig_req,
   vector<pair<KuduPartialRow, KuduPartialRow>> range_bounds;
 
   RowOperationsPBDecoder decoder(req.mutable_split_rows_range_bounds(),
-                                 &client_schema, &schema, nullptr);
+                                 &client_schema, &schema, false, nullptr);
   vector<DecodedRowOperation> ops;
   RETURN_NOT_OK(decoder.DecodeOperations<DecoderMode::SPLIT_ROWS>(&ops));
 
@@ -1548,7 +1571,7 @@ Status CatalogManager::CreateTable(const CreateTableRequestPB* orig_req,
   // Verify that the number of replicas isn't larger than the number of live tablet
   // servers.
   TSDescriptorVector ts_descs;
-  master_->ts_manager()->GetAllLiveDescriptors(&ts_descs);
+  master_->ts_manager()->GetDescriptorsAvailableForPlacement(&ts_descs);
   const auto num_live_tservers = ts_descs.size();
   if (FLAGS_catalog_manager_check_ts_count_for_create_table && num_replicas > num_live_tservers) {
     // Note: this error message is matched against in master-stress-test.
@@ -2016,7 +2039,7 @@ Status CatalogManager::DeleteTable(const DeleteTableRequestPB& req,
         resp, MasterErrorPB::TABLE_NOT_FOUND);
   }
 
-  TRACE("Modifying in-memory table state")
+  TRACE("Modifying in-memory table state");
   string deletion_msg = "Table deleted at " + LocalTimeAsString();
   l.mutable_data()->set_state(SysTablesEntryPB::REMOVED, deletion_msg);
 
@@ -2186,12 +2209,12 @@ Status CatalogManager::ApplyAlterPartitioningSteps(
     vector<DecodedRowOperation> ops;
     if (step.type() == AlterTableRequestPB::ADD_RANGE_PARTITION) {
       RowOperationsPBDecoder decoder(&step.add_range_partition().range_bounds(),
-                                     &client_schema, &schema, nullptr);
+                                     &client_schema, &schema, false, nullptr);
       RETURN_NOT_OK(decoder.DecodeOperations<DecoderMode::SPLIT_ROWS>(&ops));
     } else {
       CHECK_EQ(step.type(), AlterTableRequestPB::DROP_RANGE_PARTITION);
       RowOperationsPBDecoder decoder(&step.drop_range_partition().range_bounds(),
-                                     &client_schema, &schema, nullptr);
+                                     &client_schema, &schema, false, nullptr);
       RETURN_NOT_OK(decoder.DecodeOperations<DecoderMode::SPLIT_ROWS>(&ops));
     }
 
@@ -2891,6 +2914,32 @@ Status CatalogManager::ListTables(const ListTablesRequestPB* req,
       table->set_name(table_name);
     }
   }
+  return Status::OK();
+}
+
+Status CatalogManager::GetTableStatistics(const GetTableStatisticsRequestPB* req,
+                                          GetTableStatisticsResponsePB* resp,
+                                          optional<const string&> user) {
+  leader_lock_.AssertAcquiredForReading();
+  RETURN_NOT_OK(CheckOnline());
+
+  scoped_refptr<TableInfo> table;
+  TableMetadataLock l;
+  auto authz_func = [&] (const string& username, const string& table_name) {
+      return SetupError(authz_provider_->AuthorizeGetTableStatistics(table_name, username),
+                        resp, MasterErrorPB::NOT_AUTHORIZED);
+  };
+  RETURN_NOT_OK(FindLockAndAuthorizeTable(*req, resp, LockMode::READ, authz_func, user,
+                                          &table, &l));
+
+  int64_t on_disk_size = table->GetMetrics()->on_disk_size->value();
+  int64_t live_row_count = table->GetMetrics()->live_row_count->value();
+  if (FLAGS_mock_table_metrics_for_testing) {
+    on_disk_size = FLAGS_on_disk_size_for_testing;
+    live_row_count = FLAGS_live_row_count_for_testing;
+  }
+  resp->set_on_disk_size(on_disk_size);
+  resp->set_live_row_count(live_row_count);
   return Status::OK();
 }
 
@@ -3714,7 +3763,7 @@ bool AsyncAddReplicaTask::SendRequest(int attempt) {
     }
 
     TSDescriptorVector ts_descs;
-    master_->ts_manager()->GetAllLiveDescriptors(&ts_descs);
+    master_->ts_manager()->GetDescriptorsAvailableForPlacement(&ts_descs);
 
     // Get the dimension of the tablet. Otherwise, it will be none.
     optional<string> dimension = none;
@@ -3940,6 +3989,8 @@ Status CatalogManager::ProcessTabletReport(
   // 3. Process each tablet. This may not be in the order that the tablets
   // appear in 'full_report', but that has no bearing on correctness.
   vector<scoped_refptr<TabletInfo>> mutated_tablets;
+  unordered_set<string> uuids_ignored_for_underreplication =
+      master_->ts_manager()->GetUuidsToIgnoreForUnderreplication();
   for (const auto& e : tablet_infos) {
     const string& tablet_id = e.first;
     const scoped_refptr<TabletInfo>& tablet = e.second;
@@ -4143,18 +4194,15 @@ Status CatalogManager::ProcessTabletReport(
                  !cstate.leader_uuid().empty() &&
                  cstate.leader_uuid() == ts_desc->permanent_uuid()) {
         const auto& config = cstate.committed_config();
-        const auto policy =
-            PREDICT_FALSE(FLAGS_raft_attempt_to_replace_replica_without_majority)
-            ? MajorityHealthPolicy::IGNORE : MajorityHealthPolicy::HONOR;
         string to_evict;
         if (PREDICT_TRUE(FLAGS_catalog_manager_evict_excess_replicas) &&
-            ShouldEvictReplica(config, cstate.leader_uuid(), replication_factor,
-                               policy, &to_evict)) {
+            ShouldEvictReplica(config, cstate.leader_uuid(), replication_factor, &to_evict)) {
           DCHECK(!to_evict.empty());
           rpcs.emplace_back(new AsyncEvictReplicaTask(
               master_, tablet, cstate, std::move(to_evict)));
         } else if (FLAGS_master_add_server_when_underreplicated &&
-                   ShouldAddReplica(config, replication_factor, policy)) {
+                   ShouldAddReplica(config, replication_factor,
+                                    uuids_ignored_for_underreplication)) {
           rpcs.emplace_back(new AsyncAddReplicaTask(
               master_, tablet, cstate, RaftPeerPB::NON_VOTER, &rng_));
         }
@@ -4597,7 +4645,7 @@ Status CatalogManager::ProcessPendingAssignments(
   // For those tablets which need to be created in this round, assign replicas.
   {
     TSDescriptorVector ts_descs;
-    master_->ts_manager()->GetAllLiveDescriptors(&ts_descs);
+    master_->ts_manager()->GetDescriptorsAvailableForPlacement(&ts_descs);
     PlacementPolicy policy(std::move(ts_descs), &rng_);
     for (auto& tablet : deferred.needs_create_rpc) {
       // NOTE: if we fail to select replicas on the first pass (due to
@@ -4791,13 +4839,14 @@ Status CatalogManager::BuildLocationsForTablet(
       dimension = l_tablet.data().pb.dimension_label();
     }
     if (ts_infos_dict) {
-      int idx = *ComputeIfAbsent(
+      int idx = *ComputePairIfAbsent(
           &ts_infos_dict->uuid_to_idx, peer.permanent_uuid(),
-          [&]() -> int {
+          [&]() -> pair<StringPiece, int> {
+            auto& ts_info_pbs = ts_infos_dict->ts_info_pbs;
             auto pb = make_tsinfo_pb();
-            int idx = ts_infos_dict->ts_info_pbs.size();
-            ts_infos_dict->ts_info_pbs.emplace_back(pb.release());
-            return idx;
+            int ts_info_idx = ts_info_pbs.size();
+            ts_info_pbs.emplace_back(pb.release());
+            return { ts_info_pbs.back()->permanent_uuid(), ts_info_idx };
           });
 
       auto* interned_replica_pb = locs_pb->add_interned_replicas();
@@ -5229,6 +5278,7 @@ INITTED_OR_RESPOND(ConnectToMasterResponsePB);
 INITTED_OR_RESPOND(GetMasterRegistrationResponsePB);
 INITTED_OR_RESPOND(TSHeartbeatResponsePB);
 INITTED_AND_LEADER_OR_RESPOND(AlterTableResponsePB);
+INITTED_AND_LEADER_OR_RESPOND(ChangeTServerStateResponsePB);
 INITTED_AND_LEADER_OR_RESPOND(CreateTableResponsePB);
 INITTED_AND_LEADER_OR_RESPOND(DeleteTableResponsePB);
 INITTED_AND_LEADER_OR_RESPOND(IsAlterTableDoneResponsePB);
@@ -5236,6 +5286,7 @@ INITTED_AND_LEADER_OR_RESPOND(IsCreateTableDoneResponsePB);
 INITTED_AND_LEADER_OR_RESPOND(ListTablesResponsePB);
 INITTED_AND_LEADER_OR_RESPOND(GetTableLocationsResponsePB);
 INITTED_AND_LEADER_OR_RESPOND(GetTableSchemaResponsePB);
+INITTED_AND_LEADER_OR_RESPOND(GetTableStatisticsResponsePB);
 INITTED_AND_LEADER_OR_RESPOND(GetTabletLocationsResponsePB);
 INITTED_AND_LEADER_OR_RESPOND(ReplaceTabletResponsePB);
 
@@ -5504,6 +5555,7 @@ void TableInfo::RegisterMetrics(MetricRegistry* metric_registry, const string& t
     attrs["table_name"] = table_name;
     metric_entity_ = METRIC_ENTITY_table.Instantiate(metric_registry, table_id_, attrs);
     metrics_.reset(new TableMetrics(metric_entity_));
+    METRIC_merged_entities_count_of_table.InstantiateHidden(metric_entity_, 1);
   }
 }
 

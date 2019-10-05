@@ -77,10 +77,10 @@ public:
           : KuduTabletTest(Schema({ColumnSchema("key", INT32),
                                    ColumnSchema("string_val_a", STRING, true, NULL, NULL,
                                                 ColumnStorageAttributes(DICT_ENCODING,
-                                                                        DEFAULT_COMPRESSION)),
+                                                                        DEFAULT_COMPRESSION, OVERWRITE)),
                                    ColumnSchema("string_val_b", STRING, true, NULL, NULL,
                                                 ColumnStorageAttributes(DICT_ENCODING,
-                                                                        DEFAULT_COMPRESSION))}, 1))
+                                                                        DEFAULT_COMPRESSION, OVERWRITE))}, 1))
   {}
 
   void SetUp() override {

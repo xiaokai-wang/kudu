@@ -104,7 +104,7 @@ void RowOperationsTest::CheckDecodeDoesntCrash(const Schema& client_schema,
                                                const Schema& server_schema,
                                                const RowOperationsPB& pb) {
   arena_.Reset();
-  RowOperationsPBDecoder decoder(&pb, &client_schema, &server_schema, &arena_);
+  RowOperationsPBDecoder decoder(&pb, &client_schema, &server_schema, false, &arena_);
   // Decoding the operations, regardless of the mode, should not result in a
   // crash.
   vector<DecodedRowOperation> ops;
@@ -366,7 +366,7 @@ string TestProjection(RowOperationsPB::Type type,
   // Decode it
   Arena arena(1024);
   vector<DecodedRowOperation> ops;
-  RowOperationsPBDecoder dec(&pb, client_row.schema(), &server_schema, &arena);
+  RowOperationsPBDecoder dec(&pb, client_row.schema(), &server_schema, false, &arena);
   Status s = dec.DecodeOperations<DecoderMode::WRITE_OPS>(&ops);
 
   if (!s.ok()) {
@@ -777,7 +777,7 @@ TEST_F(RowOperationsTest, SplitKeyRoundTrip) {
   RowOperationsPBEncoder(&pb).Add(RowOperationsPB::SPLIT_ROW, row);
 
   Schema schema = client_schema.CopyWithColumnIds();
-  RowOperationsPBDecoder decoder(&pb, &client_schema, &schema, nullptr);
+  RowOperationsPBDecoder decoder(&pb, &client_schema, &schema, false, nullptr);
   vector<DecodedRowOperation> ops;
   ASSERT_OK(decoder.DecodeOperations<DecoderMode::SPLIT_ROWS>(&ops));
   ASSERT_EQ(1, ops.size());

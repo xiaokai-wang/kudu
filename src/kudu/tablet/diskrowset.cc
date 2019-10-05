@@ -467,7 +467,7 @@ Status RollingDiskRowSetWriter::FinishCurrentWriter() {
     s = cur_redo_writer_->FinishAndReleaseBlock(block_transaction_.get());
     if (!s.IsAborted()) {
       RETURN_NOT_OK(s);
-      cur_drs_metadata_->CommitRedoDeltaDataBlock(0, cur_redo_ds_block_id_);
+      cur_drs_metadata_->CommitRedoDeltaDataBlock(0, 0, cur_redo_ds_block_id_);
     } else {
       DCHECK_EQ(cur_redo_delta_stats->min_timestamp(), Timestamp::kMax);
     }
@@ -535,7 +535,8 @@ DiskRowSet::DiskRowSet(shared_ptr<RowSetMetadata> rowset_metadata,
 Status DiskRowSet::Open(const IOContext* io_context) {
   TRACE_EVENT0("tablet", "DiskRowSet::Open");
   RETURN_NOT_OK(CFileSet::Open(rowset_metadata_,
-                               mem_trackers_.tablet_tracker,
+                               mem_trackers_.bloomfile_tracker,
+                               mem_trackers_.cfile_reader_tracker,
                                io_context,
                                &base_data_));
 
@@ -607,7 +608,8 @@ Status DiskRowSet::MajorCompactDeltaStoresWithColumnIds(const vector<ColumnId>& 
   // appropriate blocks to match the update.
   shared_ptr<CFileSet> new_base;
   RETURN_NOT_OK(CFileSet::Open(rowset_metadata_,
-                               mem_trackers_.tablet_tracker,
+                               mem_trackers_.bloomfile_tracker,
+                               mem_trackers_.cfile_reader_tracker,
                                io_context,
                                &new_base));
   {

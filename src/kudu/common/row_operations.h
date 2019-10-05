@@ -56,6 +56,8 @@ class RowOperationsPBEncoder {
 struct DecodedRowOperation {
   RowOperationsPB::Type type;
 
+  bool force_overwrite;
+
   // For INSERT or UPSERT, the whole projected row.
   // For UPDATE or DELETE, the row key.
   const uint8_t* row_data;
@@ -94,6 +96,7 @@ class RowOperationsPBDecoder {
   RowOperationsPBDecoder(const RowOperationsPB* pb,
                          const Schema* client_schema,
                          const Schema* tablet_schema,
+                         const bool force_overwrite,
                          Arena* dst_arena);
   ~RowOperationsPBDecoder();
 
@@ -143,6 +146,8 @@ class RowOperationsPBDecoder {
   const RowOperationsPB* const pb_;
   const Schema* const client_schema_;
   const Schema* const tablet_schema_;
+
+  const bool force_overwrite_;
   Arena* const dst_arena_;
 
   const int bm_size_;

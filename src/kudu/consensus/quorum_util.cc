@@ -22,6 +22,7 @@
 #include <queue>
 #include <set>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -44,6 +45,7 @@ using std::pair;
 using std::priority_queue;
 using std::set;
 using std::string;
+using std::unordered_set;
 using std::vector;
 using strings::Substitute;
 
@@ -418,8 +420,9 @@ string DiffConsensusStates(const ConsensusStatePB& old_state,
 
 // The decision is based on:
 //
-//   * the number of voter replicas in definitively bad shape and replicas
-//     marked with the REPLACE attribute
+//   * the number of voter replicas that aren't ignored (i.e. that aren't
+//     allowed to be in bad shape), that are definitively in bad shape or are
+//     marked with the REPLACE attribute.
 //
 //   * the number of non-voter replicas marked with the PROMOTE=true attribute
 //     in good or possibly good state.
@@ -434,7 +437,7 @@ string DiffConsensusStates(const ConsensusStatePB& old_state,
 //                the latter case.
 bool ShouldAddReplica(const RaftConfigPB& config,
                       int replication_factor,
-                      MajorityHealthPolicy policy) {
+                      const unordered_set<string>& uuids_ignored_for_underreplication) {
   int num_voters_total = 0;
   int num_voters_healthy = 0;
   int num_voters_need_replacement = 0;
@@ -446,12 +449,24 @@ bool ShouldAddReplica(const RaftConfigPB& config,
   VLOG(2) << "config to evaluate: " << SecureDebugString(config);
   for (const RaftPeerPB& peer : config.peers()) {
     const auto overall_health = peer.health_report().overall_health();
+    const auto& peer_uuid = peer.permanent_uuid();
+    bool ignore_failure_for_underreplication = ContainsKey(uuids_ignored_for_underreplication,
+                                                           peer_uuid);
+    if (VLOG_IS_ON(1) && ignore_failure_for_underreplication) {
+      VLOG(1) << Substitute("ignoring $0 if failed", peer_uuid);
+    }
     switch (peer.member_type()) {
       case RaftPeerPB::VOTER:
         ++num_voters_total;
-        if (peer.attrs().replace() ||
-            overall_health == HealthReportPB::FAILED ||
-            overall_health == HealthReportPB::FAILED_UNRECOVERABLE) {
+        if (peer.attrs().replace()) {
+          ++num_voters_need_replacement;
+        } else if (overall_health == HealthReportPB::FAILED ||
+                   overall_health == HealthReportPB::FAILED_UNRECOVERABLE) {
+          // If the failed peer should be ignored, e.g. the server is in
+          // maintenance mode, don't count it towards under-replication.
+          if (ignore_failure_for_underreplication) {
+            continue;
+          }
           ++num_voters_need_replacement;
         }
         if (overall_health == HealthReportPB::HEALTHY) {
@@ -459,17 +474,19 @@ bool ShouldAddReplica(const RaftConfigPB& config,
         }
         break;
       case RaftPeerPB::NON_VOTER:
-        if (peer.attrs().promote() &&
-            overall_health != HealthReportPB::FAILED &&
-            overall_health != HealthReportPB::FAILED_UNRECOVERABLE) {
-          // A replica with HEALTHY or UNKNOWN overall health status
-          // is considered as a replica to promote: a new non-voter replica is
+        if (peer.attrs().promote()) {
+          // A replica with HEALTHY or UNKNOWN overall health status is
+          // considered as a replica to promote: a new non-voter replica is
           // added with UNKNOWN health status. If such a replica is not
           // responsive for a long time, then its state will change to
           // HealthReportPB::FAILED after some time and it will be evicted. But
           // before that, it's considered as a candidate for promotion in the
           // code below.
-          ++num_non_voters_to_promote;
+          if ((overall_health != HealthReportPB::FAILED &&
+               overall_health != HealthReportPB::FAILED_UNRECOVERABLE) ||
+              ignore_failure_for_underreplication) {
+            ++num_non_voters_to_promote;
+          }
         }
         break;
       default:
@@ -487,8 +504,7 @@ bool ShouldAddReplica(const RaftConfigPB& config,
   // be under-replicated, but it does not make much sense trying to add a new
   // replica if the configuration change cannot be committed.
   const bool should_add_replica = is_under_replicated &&
-      (num_voters_healthy >= MajoritySize(num_voters_total) ||
-       policy == MajorityHealthPolicy::IGNORE);
+      num_voters_healthy >= MajoritySize(num_voters_total);
 
   VLOG(2) << "decision: the config is" << (is_under_replicated ? " " : " not ")
           << "under-replicated; should" << (should_add_replica ? " " : " not ")
@@ -500,7 +516,6 @@ bool ShouldAddReplica(const RaftConfigPB& config,
 bool ShouldEvictReplica(const RaftConfigPB& config,
                         const string& leader_uuid,
                         int replication_factor,
-                        MajorityHealthPolicy policy,
                         string* uuid_to_evict) {
   if (leader_uuid.empty()) {
     // If there is no leader, we can't evict anybody.
@@ -727,8 +742,7 @@ bool ShouldEvictReplica(const RaftConfigPB& config,
   // least one non-voter replica and a majority of voter replicas are on-line
   // to commit the Raft configuration change.
   const bool should_evict_non_voter = need_to_evict_non_voter &&
-      (num_voters_healthy >= MajoritySize(num_voters_total) ||
-       policy == MajorityHealthPolicy::IGNORE);
+      num_voters_healthy >= MajoritySize(num_voters_total);
 
   bool need_to_evict_voter = false;
 
@@ -776,8 +790,7 @@ bool ShouldEvictReplica(const RaftConfigPB& config,
   const bool should_evict_voter = need_to_evict_voter &&
       (num_voters_total > replication_factor ||
        has_voter_failed_unrecoverable) &&
-      (num_voters_healthy >= MajoritySize(num_voters_total - 1) ||
-       policy == MajorityHealthPolicy::IGNORE);
+      num_voters_healthy >= MajoritySize(num_voters_total - 1);
 
   const bool should_evict = should_evict_non_voter || should_evict_voter;
   // When we have the same type of failures between voters and non-voters

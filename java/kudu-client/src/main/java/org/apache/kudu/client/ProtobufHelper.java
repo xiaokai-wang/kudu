@@ -112,6 +112,9 @@ public class ProtobufHelper {
     if (column.getEncoding() != null) {
       schemaBuilder.setEncoding(column.getEncoding().getInternalPbType());
     }
+    if (column.getUpdating() != null) {
+      schemaBuilder.setUpdating(column.getUpdating().getInternalPbType());
+    }
     if (column.getCompressionAlgorithm() != null) {
       schemaBuilder.setCompression(column.getCompressionAlgorithm().getInternalPbType());
     }
@@ -149,6 +152,7 @@ public class ProtobufHelper {
     Object defaultValue = pb.hasWriteDefaultValue() ?
         byteStringToObject(type, typeAttributes, pb.getWriteDefaultValue()) : null;
     ColumnSchema.Encoding encoding = ColumnSchema.Encoding.valueOf(pb.getEncoding().name());
+    ColumnSchema.Updating updating = ColumnSchema.Updating.valueOf(pb.getUpdating().name());
     ColumnSchema.CompressionAlgorithm compressionAlgorithm =
         ColumnSchema.CompressionAlgorithm.valueOf(pb.getCompression().name());
     int desiredBlockSize = pb.getCfileBlockSize();
@@ -157,6 +161,7 @@ public class ProtobufHelper {
                            .nullable(pb.getIsNullable())
                            .defaultValue(defaultValue)
                            .encoding(encoding)
+                           .updating(updating)
                            .compressionAlgorithm(compressionAlgorithm)
                            .desiredBlockSize(desiredBlockSize)
                            .typeAttributes(typeAttributes)

@@ -182,6 +182,32 @@ class TestMemRowSet : public KuduTest {
     return s;
   }
 
+  Status ForceUpdateRow(MemRowSet *mrs,
+                   const string &key,
+                   uint32_t new_val,
+                   OperationResultPB* result) {
+    ScopedTransaction tx(&mvcc_, clock_->Now());
+    tx.StartApplying();
+
+    mutation_buf_.clear();
+    RowChangeListEncoder update(&mutation_buf_);
+    update.AddColumnOverwrite(schema_.column(1), schema_.column_id(1), &new_val);
+
+    RowBuilder rb(key_schema_);
+    rb.AddString(Slice(key));
+    RowSetKeyProbe probe(rb.row());
+    ProbeStats stats;
+    Status s = mrs->MutateRow(tx.timestamp(),
+                              probe,
+                              RowChangeList(mutation_buf_),
+                              op_id_,
+                              nullptr,
+                              &stats,
+                              result);
+    tx.Commit();
+    return s;
+  }
+
   Status DeleteRow(MemRowSet *mrs, const string &key, OperationResultPB* result) {
     ScopedTransaction tx(&mvcc_, clock_->Now());
     tx.StartApplying();
@@ -405,6 +431,150 @@ TEST_F(TestMemRowSet, TestUpdate) {
   // Try to update a key which doesn't exist - should return NotFound
   result.Clear();
   Status s = UpdateRow(mrs.get(), "does not exist", 3, &result);
+  ASSERT_TRUE(s.IsNotFound()) << "bad status: " << s.ToString();
+  ASSERT_EQ(0, result.mutated_stores_size());
+}
+
+// Test for max updating rows in memrowset
+TEST_F(TestMemRowSet, TestMaxUpdate) {
+  ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
+  columnStorageAttributes.updating = KEEP_MAX;
+  ColumnSchema columnSchema = ColumnSchema("val", UINT32, false, NULL,
+                                           NULL, columnStorageAttributes);
+  SchemaBuilder builder;
+  CHECK_OK(builder.AddKeyColumn("key", STRING));
+  CHECK_OK(builder.AddColumn(columnSchema, false));
+  Schema schema_(builder.Build());
+
+  shared_ptr<MemRowSet> mrs;
+  ASSERT_OK(MemRowSet::Create(0, schema_, log_anchor_registry_.get(),
+                              MemTracker::GetRootTracker(), &mrs));
+
+  ASSERT_OK(InsertRow(mrs.get(), "hello world", 2));
+
+  // Validate insertion
+  CheckValue(mrs, "hello world", R"((string key="hello world", uint32 val=2))");
+
+  // Update a key which exists.
+  OperationResultPB result;
+  ASSERT_OK(UpdateRow(mrs.get(), "hello world", 1, &result));
+  ASSERT_EQ(1, result.mutated_stores_size());
+  ASSERT_EQ(0L, result.mutated_stores(0).mrs_id());
+
+  // Validate the updated value
+  CheckValue(mrs, "hello world", R"((string key="hello world", uint32 val=2))");
+
+  // Try to update a key which doesn't exist - should return NotFound
+  result.Clear();
+  Status s = UpdateRow(mrs.get(), "does not exist", 3, &result);
+  ASSERT_TRUE(s.IsNotFound()) << "bad status: " << s.ToString();
+  ASSERT_EQ(0, result.mutated_stores_size());
+}
+
+// Test for min updating rows in memrowset
+TEST_F(TestMemRowSet, TestMinUpdate) {
+  ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
+  columnStorageAttributes.updating = KEEP_MIN;
+  ColumnSchema columnSchema = ColumnSchema("val", UINT32, false, NULL,
+                                           NULL, columnStorageAttributes);
+  SchemaBuilder builder;
+  CHECK_OK(builder.AddKeyColumn("key", STRING));
+  CHECK_OK(builder.AddColumn(columnSchema, false));
+  Schema schema_(builder.Build());
+
+  shared_ptr<MemRowSet> mrs;
+  ASSERT_OK(MemRowSet::Create(0, schema_, log_anchor_registry_.get(),
+                              MemTracker::GetRootTracker(), &mrs));
+
+  ASSERT_OK(InsertRow(mrs.get(), "hello world", 1));
+
+  // Validate insertion
+  CheckValue(mrs, "hello world", R"((string key="hello world", uint32 val=1))");
+
+  // Update a key which exists.
+  OperationResultPB result;
+  ASSERT_OK(UpdateRow(mrs.get(), "hello world", 2, &result));
+  ASSERT_EQ(1, result.mutated_stores_size());
+  ASSERT_EQ(0L, result.mutated_stores(0).mrs_id());
+
+  // Validate the updated value
+  CheckValue(mrs, "hello world", R"((string key="hello world", uint32 val=1))");
+
+  // Try to update a key which doesn't exist - should return NotFound
+  result.Clear();
+  Status s = UpdateRow(mrs.get(), "does not exist", 3, &result);
+  ASSERT_TRUE(s.IsNotFound()) << "bad status: " << s.ToString();
+  ASSERT_EQ(0, result.mutated_stores_size());
+}
+
+// Test for overwrite updating rows in memrowset
+TEST_F(TestMemRowSet, TestOverWriteUpdate) {
+  ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
+  columnStorageAttributes.updating = OVERWRITE;
+  ColumnSchema columnSchema = ColumnSchema("val", UINT32, false, NULL,
+                                           NULL, columnStorageAttributes);
+  SchemaBuilder builder;
+  CHECK_OK(builder.AddKeyColumn("key", STRING));
+  CHECK_OK(builder.AddColumn(columnSchema, false));
+  Schema schema_(builder.Build());
+
+  shared_ptr<MemRowSet> mrs;
+  ASSERT_OK(MemRowSet::Create(0, schema_, log_anchor_registry_.get(),
+                              MemTracker::GetRootTracker(), &mrs));
+
+  ASSERT_OK(InsertRow(mrs.get(), "hello world", 1));
+
+  // Validate insertion
+  CheckValue(mrs, "hello world", R"((string key="hello world", uint32 val=1))");
+
+  // Update a key which exists.
+  OperationResultPB result;
+  ASSERT_OK(UpdateRow(mrs.get(), "hello world", 2, &result));
+  ASSERT_EQ(1, result.mutated_stores_size());
+  ASSERT_EQ(0L, result.mutated_stores(0).mrs_id());
+
+  // Validate the updated value
+  CheckValue(mrs, "hello world", R"((string key="hello world", uint32 val=2))");
+
+  // Try to update a key which doesn't exist - should return NotFound
+  result.Clear();
+  Status s = UpdateRow(mrs.get(), "does not exist", 3, &result);
+  ASSERT_TRUE(s.IsNotFound()) << "bad status: " << s.ToString();
+  ASSERT_EQ(0, result.mutated_stores_size());
+}
+
+// Test for force overwrite updating rows in memrowset
+TEST_F(TestMemRowSet, TestForceOverWriteUpdate) {
+  ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
+  columnStorageAttributes.updating = KEEP_MAX;
+  ColumnSchema columnSchema = ColumnSchema("val", UINT32, false, NULL,
+                                           NULL, columnStorageAttributes);
+  SchemaBuilder builder;
+  CHECK_OK(builder.AddKeyColumn("key", STRING));
+  CHECK_OK(builder.AddColumn(columnSchema, false));
+  Schema schema_(builder.Build());
+
+  shared_ptr<MemRowSet> mrs;
+  ASSERT_OK(MemRowSet::Create(0, schema_, log_anchor_registry_.get(),
+                              MemTracker::GetRootTracker(), &mrs));
+
+  ASSERT_OK(InsertRow(mrs.get(), "hello world", 2));
+
+  // Validate insertion
+  CheckValue(mrs, "hello world", R"((string key="hello world", uint32 val=2))");
+
+  // Update a key which exists.
+  OperationResultPB result;
+  ASSERT_OK(ForceUpdateRow(mrs.get(), "hello world", 1, &result));
+  ASSERT_EQ(1, result.mutated_stores_size());
+  ASSERT_EQ(0L, result.mutated_stores(0).mrs_id());
+
+  // Validate the updated value
+  CheckValue(mrs, "hello world", R"((string key="hello world", uint32 val=1))");
+
+  // Try to update a key which doesn't exist - should return NotFound
+  result.Clear();
+  Status s = ForceUpdateRow(mrs.get(), "does not exist", 3, &result);
   ASSERT_TRUE(s.IsNotFound()) << "bad status: " << s.ToString();
   ASSERT_EQ(0, result.mutated_stores_size());
 }

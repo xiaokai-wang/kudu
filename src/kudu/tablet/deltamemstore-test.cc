@@ -153,6 +153,46 @@ class TestDeltaMemStore : public KuduTest {
     ASSERT_OK(iter->ApplyUpdates(0, cb, filter));
   }
 
+  void ApplyConditionalUpdates(const MvccSnapshot &snapshot,
+                               uint32_t row_idx,
+                               size_t col_idx,
+                               ColumnBlock *cb,
+                               UpdatingType updatingType) {
+    ColumnId columnId(col_idx);
+
+    ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
+    columnStorageAttributes.updating = updatingType;
+    ColumnSchema col_schema("col3", INT32, false, NULL, NULL, columnStorageAttributes);
+
+    Schema single_col_projection({ col_schema },
+                                 { columnId },
+                                 0);
+
+    RowIteratorOptions opts;
+    opts.projection = &single_col_projection;
+    opts.snap_to_include = snapshot;
+    unique_ptr<DeltaIterator> iter;
+    Status s = dms_->NewDeltaIterator(opts, &iter);
+    if (s.IsNotFound()) {
+      return;
+    }
+    ASSERT_OK(s);
+
+    int32_t *value = new int32_t(0);
+    SimpleConstCell src(&col_schema, static_cast<const void *>(value));
+    ColumnBlock::Cell dst_cell = cb->cell(0);
+    CopyCell(src, &dst_cell, cb->arena());
+
+    ASSERT_OK(iter->Init(nullptr));
+    ASSERT_OK(iter->SeekToOrdinal(row_idx));
+    ASSERT_OK(iter->PrepareBatch(cb->nrows(), DeltaIterator::PREPARE_FOR_APPLY));
+    SelectionVector filter(cb->nrows());
+    filter.SetAllTrue();
+    ASSERT_OK(iter->ApplyUpdates(0, cb, filter));
+
+    delete(value);
+  }
+
  protected:
   static const int kStringColumn = 1;
   static const int kIntColumn = 2;
@@ -468,6 +508,153 @@ TEST_F(TestDeltaMemStore, TestOutOfOrderTxns) {
   ScopedColumnBlock<STRING> read_back(1);
   ApplyUpdates(MvccSnapshot(mvcc_), 123, kStringColumn, &read_back);
   ASSERT_EQ("update 2", read_back[0].ToString());
+}
+
+// Test that if two updates come in with order transaction IDs,
+// the one correspond to column attributes ends up winning.
+//
+// This is important during flushing when updates.
+TEST_F(TestDeltaMemStore, TestMaxUpdateTxn) {
+  ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
+  columnStorageAttributes.updating = KEEP_MAX;
+
+  ColumnSchema columnSchema = ColumnSchema("col3", INT32, false, NULL,
+                                           NULL, columnStorageAttributes);
+  SchemaBuilder builder;
+  CHECK_OK(builder.AddColumn("col0", STRING));
+  CHECK_OK(builder.AddColumn("col1", STRING));
+  CHECK_OK(builder.AddColumn("col2", UINT32));
+  CHECK_OK(builder.AddColumn(columnSchema, false));
+  Schema schema_(builder.Build());
+
+  faststring update_buf;
+  RowChangeListEncoder update(&update_buf);
+  {
+    ScopedTransaction tx1(&mvcc_, clock_->Now());
+    ScopedTransaction tx2(&mvcc_, clock_->Now());
+
+    tx2.StartApplying();
+    int32_t value = 1;
+    update.AddColumnUpdate(schema_.column(3),
+                           schema_.column_id(3), &value);
+    ASSERT_OK(dms_->Update(tx2.timestamp(), 123, RowChangeList(update_buf), op_id_));
+    tx2.Commit();
+
+
+    tx1.StartApplying();
+    update.Reset();
+    int32_t value_two = 2;
+    update.AddColumnUpdate(schema_.column(3),
+                           schema_.column_id(3), &value_two);
+    ASSERT_OK(dms_->Update(tx1.timestamp(), 123, RowChangeList(update_buf), op_id_));
+    tx1.Commit();
+  }
+
+  // Ensure we end up two entries for the cell.
+  ASSERT_EQ(2, dms_->Count());
+
+  // Ensure that we ended up with the right data.
+  ScopedColumnBlock<UINT32> read_back(1);
+  ApplyConditionalUpdates(MvccSnapshot(mvcc_), 123, 3, &read_back, KEEP_MAX);
+  ASSERT_EQ(2, read_back[0]);
+}
+
+// Test that if two updates come in with order transaction IDs,
+// the one correspond to column attributes ends up winning.
+//
+// This is important during flushing when updates.
+TEST_F(TestDeltaMemStore, TestMinUpdateTxn) {
+  ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
+  columnStorageAttributes.updating = KEEP_MIN;
+
+  ColumnSchema columnSchema = ColumnSchema("col3", INT32, false, NULL,
+                                           NULL, columnStorageAttributes);
+  SchemaBuilder builder;
+  CHECK_OK(builder.AddColumn("col0", STRING));
+  CHECK_OK(builder.AddColumn("col1", STRING));
+  CHECK_OK(builder.AddColumn("col2", UINT32));
+  CHECK_OK(builder.AddColumn(columnSchema, false));
+  Schema schema_(builder.Build());
+
+  faststring update_buf;
+  RowChangeListEncoder update(&update_buf);
+  {
+    ScopedTransaction tx1(&mvcc_, clock_->Now());
+    ScopedTransaction tx2(&mvcc_, clock_->Now());
+
+    tx2.StartApplying();
+    int32_t value = 2;
+    update.AddColumnUpdate(schema_.column(3),
+                           schema_.column_id(3), &value);
+    ASSERT_OK(dms_->Update(tx2.timestamp(), 123, RowChangeList(update_buf), op_id_));
+    tx2.Commit();
+
+
+    tx1.StartApplying();
+    update.Reset();
+    int32_t value_two = 0;
+    update.AddColumnUpdate(schema_.column(3),
+                           schema_.column_id(3), &value_two);
+    ASSERT_OK(dms_->Update(tx1.timestamp(), 123, RowChangeList(update_buf), op_id_));
+    tx1.Commit();
+  }
+
+  // Ensure we end up two entries for the cell.
+  ASSERT_EQ(2, dms_->Count());
+
+  // Ensure that we ended up with the right data.
+  ScopedColumnBlock<UINT32> read_back(1);
+  ApplyConditionalUpdates(MvccSnapshot(mvcc_), 123, 3, &read_back, KEEP_MIN);
+  ASSERT_EQ(0, read_back[0]);
+}
+
+// Test that if two updates come in with order transaction IDs,
+// the one correspond to column attributes ends up winning.
+//
+// This is important during flushing when updates.
+TEST_F(TestDeltaMemStore, TestOverWriteUpdateTxn) {
+  ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
+  columnStorageAttributes.updating = KEEP_MIN;
+
+  ColumnSchema columnSchema = ColumnSchema("col3", INT32, false, NULL,
+                                           NULL, columnStorageAttributes);
+  SchemaBuilder builder;
+  CHECK_OK(builder.AddColumn("col0", STRING));
+  CHECK_OK(builder.AddColumn("col1", STRING));
+  CHECK_OK(builder.AddColumn("col2", UINT32));
+  CHECK_OK(builder.AddColumn(columnSchema, false));
+  Schema schema_(builder.Build());
+
+  faststring update_buf;
+  RowChangeListEncoder update(&update_buf);
+  {
+    ScopedTransaction tx1(&mvcc_, clock_->Now());
+    ScopedTransaction tx2(&mvcc_, clock_->Now());
+
+    tx2.StartApplying();
+    int32_t value = 0;
+    update.AddColumnOverwrite(schema_.column(3),
+                              schema_.column_id(3), &value);
+    ASSERT_OK(dms_->Update(tx2.timestamp(), 123, RowChangeList(update_buf), op_id_));
+    tx2.Commit();
+
+
+    tx1.StartApplying();
+    update.Reset();
+    int32_t value_two = 1;
+    update.AddColumnOverwrite(schema_.column(3),
+                              schema_.column_id(3), &value_two);
+    ASSERT_OK(dms_->Update(tx1.timestamp(), 123, RowChangeList(update_buf), op_id_));
+    tx1.Commit();
+  }
+
+  // Ensure we end up two entries for the cell.
+  ASSERT_EQ(2, dms_->Count());
+
+  // Ensure that we ended up with the right data.
+  ScopedColumnBlock<UINT32> read_back(1);
+  ApplyConditionalUpdates(MvccSnapshot(mvcc_), 123, 3, &read_back, OVERWRITE);
+  ASSERT_EQ(0, read_back[0]);
 }
 
 TEST_F(TestDeltaMemStore, TestDMSBasic) {

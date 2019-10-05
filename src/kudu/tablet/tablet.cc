@@ -231,6 +231,7 @@ Tablet::Tablet(scoped_refptr<TabletMetadata> metadata,
     METRIC_num_rowsets_on_disk.InstantiateFunctionGauge(
       metric_entity_, Bind(&Tablet::num_rowsets, Unretained(this)))
       ->AutoDetach(&metric_detacher_);
+    METRIC_merged_entities_count_of_tablet.InstantiateHidden(metric_entity_, 1);
   }
 
   if (FLAGS_tablet_throttler_rpc_per_sec > 0 || FLAGS_tablet_throttler_bytes_per_sec > 0) {
@@ -251,7 +252,7 @@ Tablet::~Tablet() {
   std::lock_guard<simple_spinlock> l(state_lock_); \
   RETURN_NOT_OK(CheckHasNotBeenStoppedUnlocked()); \
   CHECK_EQ(expected_state, state_); \
-} while (0);
+} while (0)
 
 Status Tablet::Open() {
   TRACE_EVENT0("tablet", "Tablet::Open");
@@ -432,6 +433,7 @@ Status Tablet::DecodeWriteOperations(const Schema* client_schema,
   RowOperationsPBDecoder dec(&tx_state->request()->row_operations(),
                              client_schema,
                              schema(),
+                             tx_state->request()->force_overwrite(),
                              tx_state->arena());
   RETURN_NOT_OK(dec.DecodeOperations<DecoderMode::WRITE_OPS>(&ops));
   TRACE_COUNTER_INCREMENT("num_ops", ops.size());
@@ -642,7 +644,11 @@ Status Tablet::ApplyUpsertAsUpdate(const IOContext* io_context,
     if (!BitmapTest(upsert->decoded_op.isset_bitmap, i)) continue;
     const auto& c = schema->column(i);
     const void* val = c.is_nullable() ? row.nullable_cell_ptr(i) : row.cell_ptr(i);
-    enc.AddColumnUpdate(c, schema->column_id(i), val);
+    if (upsert->decoded_op.force_overwrite) {
+      enc.AddColumnOverwrite(c, schema->column_id(i), val);
+    } else {
+      enc.AddColumnUpdate(c, schema->column_id(i), val);
+    }
   }
 
   // If the UPSERT just included the primary key columns, and the rest
@@ -1724,12 +1730,13 @@ void Tablet::UpdateAverageRowsetHeight() {
   scoped_refptr<TabletComponents> comps;
   GetComponents(&comps);
   std::lock_guard<std::mutex> l(compact_select_lock_);
-  double avg_height;
+  double rowset_total_height, rowset_total_width;
   RowSetInfo::ComputeCdfAndCollectOrdered(*comps->rowsets,
-                                          &avg_height,
+                                          &rowset_total_height,
+                                          &rowset_total_width,
                                           nullptr,
                                           nullptr);
-  metrics_->average_diskrowset_height->set_value(avg_height);
+  metrics_->average_diskrowset_height->set_value(rowset_total_height, rowset_total_width);
 }
 
 Status Tablet::Compact(CompactFlags flags) {
@@ -2357,9 +2364,16 @@ void Tablet::PrintRSLayout(ostream* o) {
     out << "</p>";
   }
 
-  double avg_height;
+  double rowset_total_height, rowset_total_width;
   vector<RowSetInfo> min, max;
-  RowSetInfo::ComputeCdfAndCollectOrdered(*rowsets_copy, &avg_height, &min, &max);
+  RowSetInfo::ComputeCdfAndCollectOrdered(*rowsets_copy,
+                                          &rowset_total_height,
+                                          &rowset_total_width,
+                                          &min,
+                                          &max);
+  double average_rowset_height = rowset_total_width > 0
+                               ? rowset_total_height / rowset_total_width
+                               : 0.0;
   DumpCompactionSVG(min, picked, o, /*print_xml_header=*/false);
 
   // Compaction policy ignores rowsets unavailable for compaction. This is good,
@@ -2421,7 +2435,7 @@ void Tablet::PrintRSLayout(ostream* o) {
                       HumanReadableNumBytes::ToString(size_bytes_median),
                       HumanReadableNumBytes::ToString(size_bytes_third_quartile),
                       HumanReadableNumBytes::ToString(size_bytes_max),
-                      avg_height);
+                      average_rowset_height);
     out << "</table>" << endl;
   }
 

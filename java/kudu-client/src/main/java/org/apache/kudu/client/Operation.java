@@ -133,6 +133,24 @@ public abstract class Operation extends KuduRpc<OperationResponse> {
     this.ignoreAllNotFoundRows = ignoreAllNotFoundRows;
   }
 
+  /*
+   * When column is set conditional updating, updating value will follow conditional.
+   * The attribute make a choice to force updating.
+   */
+  private boolean forceOverwriteFlag = false;
+  private boolean forceOverwrite = false;
+
+  public boolean isForceOverwrite() {
+    return forceOverwrite;
+  }
+
+  public void setForceOverwrite(boolean forceOverwrite) {
+    this.forceOverwrite = forceOverwrite;
+    this.forceOverwriteFlag = true;
+  }
+
+  public boolean isSetForceOverwrite() { return forceOverwriteFlag; }
+
   /**
    * Classes extending Operation need to have a specific ChangeType
    * @return Operation's ChangeType
@@ -179,6 +197,7 @@ public abstract class Operation extends KuduRpc<OperationResponse> {
         (long)builder.getRowOperations().getIndirectData().size();
     builder.setTabletId(UnsafeByteOperations.unsafeWrap(getTablet().getTabletIdAsBytes()));
     builder.setExternalConsistencyMode(this.externalConsistencyMode.pbVersion());
+    builder.setForceOverwrite(this.isForceOverwrite());
     if (this.propagatedTimestamp != AsyncKuduClient.NO_TIMESTAMP) {
       builder.setPropagatedTimestamp(this.propagatedTimestamp);
     }

@@ -40,6 +40,11 @@ kudu::CompressionType ToInternalCompressionType(
 KuduColumnStorageAttributes::CompressionType FromInternalCompressionType(
     kudu::CompressionType type);
 
+kudu::UpdatingType ToInternalUpdatingType(
+    KuduColumnStorageAttributes::UpdatingType type);
+KuduColumnStorageAttributes::UpdatingType FromInternalUpdatingType(
+    kudu::UpdatingType type);
+
 kudu::DataType ToInternalDataType(
     KuduColumnSchema::DataType type,
     const KuduColumnTypeAttributes& attributes);
@@ -77,6 +82,7 @@ class KuduColumnSpec::Data {
   boost::optional<int8_t> scale;
   boost::optional<KuduColumnStorageAttributes::EncodingType> encoding;
   boost::optional<KuduColumnStorageAttributes::CompressionType> compression;
+  boost::optional<KuduColumnStorageAttributes::UpdatingType> updating;
   boost::optional<int32_t> block_size;
   boost::optional<bool> nullable;
   bool primary_key;

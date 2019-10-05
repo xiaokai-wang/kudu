@@ -200,4 +200,18 @@ public interface SessionConfiguration {
    * @return an object that contains the errors and the overflow status
    */
   RowErrorsAndOverflowStatus getPendingErrors();
+
+  /**
+   * Tells if the session is currently force overwrite the row when updating.
+   * @return true if the session is enforcing this, else false
+   */
+  boolean isForceOverwrite();
+
+  /**
+   * Configures the option to force overwrite the row when updating.
+   *
+   * <p>Disabled by default.
+   * @param forceOverwrite true if this session should enforce this, else false
+   */
+  void setForceOverwrite(boolean forceOverwrite);
 }

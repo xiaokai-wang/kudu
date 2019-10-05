@@ -80,9 +80,9 @@ struct RowOpsBase {
   RowOpsBase(DataType type, EncodingType encoding) : type_(type), encoding_(encoding) {
     schema_ = Schema({ColumnSchema("key", INT32),
                      ColumnSchema("val_a", type, true, nullptr, nullptr,
-                         ColumnStorageAttributes(encoding, DEFAULT_COMPRESSION)),
+                         ColumnStorageAttributes(encoding, DEFAULT_COMPRESSION, OVERWRITE)),
                      ColumnSchema("val_b", type, true, nullptr, nullptr,
-                         ColumnStorageAttributes(encoding, DEFAULT_COMPRESSION))}, 1);
+                         ColumnStorageAttributes(encoding, DEFAULT_COMPRESSION, OVERWRITE))}, 1);
 
   }
   DataType type_;
@@ -292,11 +292,11 @@ public:
     AlterSchema(builder.Build());
     altered_schema_ = Schema({ColumnSchema("key", INT32),
                      ColumnSchema("val_a", rowops_.type_, true, nullptr, nullptr,
-                         ColumnStorageAttributes(rowops_.encoding_, DEFAULT_COMPRESSION)),
+                         ColumnStorageAttributes(rowops_.encoding_, DEFAULT_COMPRESSION, OVERWRITE)),
                      ColumnSchema("val_b", rowops_.type_, true, nullptr, nullptr,
-                         ColumnStorageAttributes(rowops_.encoding_, DEFAULT_COMPRESSION)),
+                         ColumnStorageAttributes(rowops_.encoding_, DEFAULT_COMPRESSION, OVERWRITE)),
                      ColumnSchema("val_c", rowops_.type_, true, default_ptr, nullptr,
-                         ColumnStorageAttributes(rowops_.encoding_, DEFAULT_COMPRESSION))}, 1);
+                         ColumnStorageAttributes(rowops_.encoding_, DEFAULT_COMPRESSION, OVERWRITE))}, 1);
   }
 
   // Scan the results of a query. Set "count" to the number of results satisfying the predicates.

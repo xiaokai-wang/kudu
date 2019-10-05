@@ -946,5 +946,179 @@ TEST_P(DiffScanRowSetTest, TestFuzz) {
                              make_tuple(3, 400, 9, true) }));
 }
 
+TEST_F(TestRowSet, TestMaxRead) {
+  // Write 100 rows.
+  WriteTestRowSet(100);
+  shared_ptr<DiskRowSet> rs;
+  ASSERT_OK(OpenTestRowSet(&rs));
+
+  // Read un-updated row.
+  NO_FATALS(ConditionalVerifyRandomRead(*rs, "hello 000000000000050",
+                                        R"((string key="hello 000000000000050", uint32 val=50))",
+                                        KEEP_MAX, Timestamp::kMax));
+
+  // Update the row.
+  OperationResultPB result;
+  ASSERT_OK(ConditionalUpdateRow(rs.get(), 50, 12345, &result, KEEP_MAX));
+
+  // Read it again -- should see the updated value.
+  NO_FATALS(ConditionalVerifyRandomRead(*rs, "hello 000000000000050",
+                                        R"((string key="hello 000000000000050", uint32 val=12345))",
+                                        KEEP_MAX, Timestamp::kMax));
+
+  // Update the row.
+  ASSERT_OK(ConditionalUpdateRow(rs.get(), 50, 60, &result, KEEP_MAX));
+
+  // Read it again -- should see the updated value.
+  NO_FATALS(ConditionalVerifyRandomRead(*rs, "hello 000000000000050",
+                                        R"((string key="hello 000000000000050", uint32 val=12345))",
+                                        KEEP_MAX, Timestamp::kMax));
+
+  // Convert the REDO delta to an UNDO delta.
+  ASSERT_OK(rs->MajorCompactDeltaStores(nullptr, HistoryGcOpts::Disabled()));
+
+  NO_FATALS(ConditionalVerifyRandomRead(*rs, "hello 000000000000050",
+                                        R"((string key="hello 000000000000050", uint32 val=12345))",
+                                        KEEP_MAX, Timestamp::kMax));
+
+  Timestamp timestamp = clock_->Now();
+  usleep(1000000 * 5);
+  LOG(INFO) << "Timestamp=" <<timestamp.ToString();
+
+  ASSERT_OK(ConditionalUpdateRow(rs.get(), 50, 45678, &result, KEEP_MAX));
+  NO_FATALS(ConditionalVerifyRandomRead(*rs, "hello 000000000000050",
+                                        R"((string key="hello 000000000000050", uint32 val=12345))",
+                                        KEEP_MAX, timestamp));
+}
+
+TEST_F(TestRowSet, TestMinRead) {
+  // Write 100 rows.
+  WriteTestRowSet(100);
+  shared_ptr<DiskRowSet> rs;
+  ASSERT_OK(OpenTestRowSet(&rs));
+
+  // Read un-updated row.
+  NO_FATALS(ConditionalVerifyRandomRead(*rs, "hello 000000000000050",
+                                        R"((string key="hello 000000000000050", uint32 val=50))",
+                                        KEEP_MIN, Timestamp::kMax));
+
+  // Update the row.
+  OperationResultPB result;
+  ASSERT_OK(ConditionalUpdateRow(rs.get(), 50, 12345, &result, KEEP_MIN));
+
+  // Read it again -- should see the updated value.
+  NO_FATALS(ConditionalVerifyRandomRead(*rs, "hello 000000000000050",
+                                        R"((string key="hello 000000000000050", uint32 val=50))",
+                                        KEEP_MIN, Timestamp::kMax));
+
+  // Update the row.
+  ASSERT_OK(ConditionalUpdateRow(rs.get(), 50, 30, &result, KEEP_MIN));
+
+  // Read it again -- should see the updated value.
+  NO_FATALS(ConditionalVerifyRandomRead(*rs, "hello 000000000000050",
+                                        R"((string key="hello 000000000000050", uint32 val=30))",
+                                        KEEP_MIN, Timestamp::kMax));
+
+  // Convert the REDO delta to an UNDO delta.
+  ASSERT_OK(rs->MajorCompactDeltaStores(nullptr, HistoryGcOpts::Disabled()));
+
+  NO_FATALS(ConditionalVerifyRandomRead(*rs, "hello 000000000000050",
+                                        R"((string key="hello 000000000000050", uint32 val=30))",
+                                        KEEP_MIN, Timestamp::kMax));
+
+  Timestamp timestamp = clock_->Now();
+  usleep(1000000 * 5);
+  ASSERT_OK(ConditionalUpdateRow(rs.get(), 50, 20, &result, KEEP_MIN));
+  NO_FATALS(ConditionalVerifyRandomRead(*rs, "hello 000000000000050",
+                                        R"((string key="hello 000000000000050", uint32 val=30))",
+                                        KEEP_MIN, timestamp));
+}
+
+TEST_F(TestRowSet, TestOverWriteRead) {
+  // Write 100 rows.
+  WriteTestRowSet(100);
+  shared_ptr<DiskRowSet> rs;
+  ASSERT_OK(OpenTestRowSet(&rs));
+
+  // Read un-updated row.
+  NO_FATALS(ConditionalVerifyRandomRead(*rs, "hello 000000000000050",
+                                        R"((string key="hello 000000000000050", uint32 val=50))",
+                                        OVERWRITE, Timestamp::kMax));
+
+  // Update the row.
+  OperationResultPB result;
+  ASSERT_OK(ConditionalUpdateRow(rs.get(), 50, 12345, &result, OVERWRITE));
+
+  // Read it again -- should see the updated value.
+  NO_FATALS(ConditionalVerifyRandomRead(*rs, "hello 000000000000050",
+                                        R"((string key="hello 000000000000050", uint32 val=12345))",
+                                        OVERWRITE, Timestamp::kMax));
+
+  // Update the row.
+  ASSERT_OK(ConditionalUpdateRow(rs.get(), 50, 60, &result, OVERWRITE));
+
+  // Read it again -- should see the updated value.
+  NO_FATALS(ConditionalVerifyRandomRead(*rs, "hello 000000000000050",
+                                        R"((string key="hello 000000000000050", uint32 val=60))",
+                                        OVERWRITE, Timestamp::kMax));
+
+  // Convert the REDO delta to an UNDO delta.
+  ASSERT_OK(rs->MajorCompactDeltaStores(nullptr, HistoryGcOpts::Disabled()));
+
+  NO_FATALS(ConditionalVerifyRandomRead(*rs, "hello 000000000000050",
+                                        R"((string key="hello 000000000000050", uint32 val=60))",
+                                        OVERWRITE, Timestamp::kMax));
+
+  Timestamp timestamp = clock_->Now();
+  usleep(1000000 * 5);
+  ASSERT_OK(ConditionalUpdateRow(rs.get(), 50, 20, &result, OVERWRITE));
+  NO_FATALS(ConditionalVerifyRandomRead(*rs, "hello 000000000000050",
+                                        R"((string key="hello 000000000000050", uint32 val=60))",
+                                        OVERWRITE, timestamp));
+}
+
+TEST_F(TestRowSet, TestForceOverWriteRead) {
+  // Write 100 rows.
+  WriteTestRowSet(100);
+  shared_ptr<DiskRowSet> rs;
+  ASSERT_OK(OpenTestRowSet(&rs));
+
+  // Read un-updated row.
+  NO_FATALS(ConditionalVerifyRandomRead(*rs, "hello 000000000000050",
+                                        R"((string key="hello 000000000000050", uint32 val=50))",
+                                        KEEP_MAX, Timestamp::kMax));
+
+  // Update the row.
+  OperationResultPB result;
+  ASSERT_OK(ForceUpdateRow(rs.get(), 50, 12345, &result));
+
+  // Read it again -- should see the updated value.
+  NO_FATALS(ConditionalVerifyRandomRead(*rs, "hello 000000000000050",
+                                        R"((string key="hello 000000000000050", uint32 val=12345))",
+                                        KEEP_MAX, Timestamp::kMax));
+
+  // Update the row.
+  ASSERT_OK(ForceUpdateRow(rs.get(), 50, 60, &result));
+
+  // Read it again -- should see the updated value.
+  NO_FATALS(ConditionalVerifyRandomRead(*rs, "hello 000000000000050",
+                                        R"((string key="hello 000000000000050", uint32 val=60))",
+                                        KEEP_MAX, Timestamp::kMax));
+
+  // Convert the REDO delta to an UNDO delta.
+  ASSERT_OK(rs->MajorCompactDeltaStores(nullptr, HistoryGcOpts::Disabled()));
+
+  NO_FATALS(ConditionalVerifyRandomRead(*rs, "hello 000000000000050",
+                                        R"((string key="hello 000000000000050", uint32 val=60))",
+                                        KEEP_MAX, Timestamp::kMax));
+
+  Timestamp timestamp = clock_->Now();
+  usleep(1000000 * 5);
+  ASSERT_OK(ForceUpdateRow(rs.get(), 50, 20, &result));
+  NO_FATALS(ConditionalVerifyRandomRead(*rs, "hello 000000000000050",
+                                        R"((string key="hello 000000000000050", uint32 val=60))",
+                                        KEEP_MAX, timestamp));
+}
+
 } // namespace tablet
 } // namespace kudu

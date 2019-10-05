@@ -24,7 +24,6 @@
 #include "kudu/clock/time_service.h"
 #include "kudu/common/common.pb.h"
 #include "kudu/common/timestamp.h"
-#include "kudu/gutil/port.h"
 #include "kudu/gutil/ref_counted.h"
 #include "kudu/util/locks.h"
 #include "kudu/util/metrics.h"
@@ -42,32 +41,32 @@ class HybridClock : public Clock {
  public:
   HybridClock();
 
-  virtual Status Init() OVERRIDE;
+  Status Init() override;
 
   // Obtains the timestamp corresponding to the current time.
-  virtual Timestamp Now() OVERRIDE;
+  Timestamp Now() override;
 
   // Obtains the timestamp corresponding to latest possible current
   // time.
-  virtual Timestamp NowLatest() OVERRIDE;
+  Timestamp NowLatest() override;
 
   // Obtain a timestamp which is guaranteed to be later than the current time
   // on any machine in the cluster.
   //
   // NOTE: this is not a very tight bound.
-  virtual Status GetGlobalLatest(Timestamp* t) OVERRIDE;
+  Status GetGlobalLatest(Timestamp* t) override;
 
   // Updates the clock with a timestamp originating on another machine.
-  virtual Status Update(const Timestamp& to_update) OVERRIDE;
+  Status Update(const Timestamp& to_update) override;
 
-  virtual void RegisterMetrics(const scoped_refptr<MetricEntity>& metric_entity) OVERRIDE;
+  void RegisterMetrics(const scoped_refptr<MetricEntity>& metric_entity) override;
 
   // HybridClock supports all external consistency modes.
-  virtual bool SupportsExternalConsistencyMode(ExternalConsistencyMode mode) OVERRIDE;
+  bool SupportsExternalConsistencyMode(ExternalConsistencyMode mode) override;
 
-  virtual bool HasPhysicalComponent() const OVERRIDE;
+  bool HasPhysicalComponent() const override;
 
-  MonoDelta GetPhysicalComponentDifference(Timestamp lhs, Timestamp rhs) const OVERRIDE;
+  MonoDelta GetPhysicalComponentDifference(Timestamp lhs, Timestamp rhs) const override;
 
   // Blocks the caller thread until the true time is after 'then'.
   // In other words, waits until the HybridClock::Now() on _all_ nodes
@@ -99,8 +98,8 @@ class HybridClock : public Clock {
   // This is because, by looking at the current clock, we can know how long
   // we'll have to wait, in contrast to most Wait() methods which are waiting
   // on some external condition to become true.
-  virtual Status WaitUntilAfter(const Timestamp& then,
-                                const MonoTime& deadline) OVERRIDE;
+  Status WaitUntilAfter(const Timestamp& then,
+                        const MonoTime& deadline) override;
 
   // Blocks the caller thread until the local time is after 'then'.
   // This is in contrast to the above method, which waits until the time
@@ -109,8 +108,8 @@ class HybridClock : public Clock {
   // Returns Status::TimedOut() if 'deadline' will pass before the specified
   // timestamp. NOTE: unlike most "wait" methods, this may return _immediately_
   // with a timeout. See WaitUntilAfter() for details.
-  virtual Status WaitUntilAfterLocally(const Timestamp& then,
-                                       const MonoTime& deadline) OVERRIDE;
+  Status WaitUntilAfterLocally(const Timestamp& then,
+                               const MonoTime& deadline) override;
 
   // Return true if the given time has passed (i.e any future call
   // to Now() would return a higher value than t).
@@ -118,15 +117,15 @@ class HybridClock : public Clock {
   // NOTE: this only refers to the _local_ clock, and is not a guarantee
   // that other nodes' clocks have definitely passed this timestamp.
   // This is in contrast to WaitUntilAfter() above.
-  virtual bool IsAfter(Timestamp t) OVERRIDE;
+  bool IsAfter(Timestamp t) override;
+
+  std::string Stringify(Timestamp timestamp) override;
 
   // Obtains the timestamp corresponding to the current time and the associated
   // error in micros. This may fail if the clock is unsynchronized or synchronized
   // but the error is too high and, since we can't do anything about it,
   // LOG(FATAL)'s in that case.
   void NowWithError(Timestamp* timestamp, uint64_t* max_error_usec);
-
-  virtual std::string Stringify(Timestamp timestamp) OVERRIDE;
 
   // Static encoding/decoding methods for timestamps. Public mostly
   // for testing/debugging purposes.
@@ -158,13 +157,11 @@ class HybridClock : public Clock {
   }
 
  private:
-  friend class TestNtp;
-
   // Obtains the current wallclock time and maximum error in microseconds,
   // and checks if the clock is synchronized.
   //
   // On OS X, the error will always be 0.
-  kudu::Status WalltimeWithError(uint64_t* now_usec, uint64_t* error_usec);
+  Status WalltimeWithError(uint64_t* now_usec, uint64_t* error_usec);
 
   // Same as above, but exits with a FATAL if there is an error.
   void WalltimeWithErrorOrDie(uint64_t* now_usec, uint64_t* error_usec);

@@ -165,10 +165,12 @@ void RowOperationsPBEncoder::Add(RowOperationsPB::Type op_type, const KuduPartia
 RowOperationsPBDecoder::RowOperationsPBDecoder(const RowOperationsPB* pb,
                                                const Schema* client_schema,
                                                const Schema* tablet_schema,
+                                               const bool force_overwrite,
                                                Arena* dst_arena)
   : pb_(pb),
     client_schema_(client_schema),
     tablet_schema_(tablet_schema),
+    force_overwrite_(force_overwrite),
     dst_arena_(dst_arena),
     bm_size_(BitmapSize(client_schema_->num_columns())),
     tablet_row_size_(ContiguousRowHelper::row_size(*tablet_schema_)),
@@ -436,6 +438,7 @@ Status RowOperationsPBDecoder::DecodeInsertOrUpsert(const uint8_t* prototype_row
 
   op->row_data = tablet_row_storage;
   op->isset_bitmap = tablet_isset_bitmap;
+  op->force_overwrite = force_overwrite_;
   return Status::OK();
 }
 
@@ -523,7 +526,13 @@ Status RowOperationsPBDecoder::DecodeUpdateOrDelete(const ClientServerMapping& m
           RETURN_NOT_OK(ReadColumnAndDiscard(col));
           continue;
         }
-        rcl_encoder.AddColumnUpdate(col, tablet_schema_->column_id(tablet_col_idx), val_to_add);
+        if (force_overwrite_) {
+          rcl_encoder.AddColumnOverwrite(col, tablet_schema_->column_id(tablet_col_idx),
+                                         val_to_add);
+        } else {
+          rcl_encoder.AddColumnUpdate(col, tablet_schema_->column_id(tablet_col_idx),
+                                      val_to_add);
+        }
       }
     }
 
@@ -542,6 +551,7 @@ Status RowOperationsPBDecoder::DecodeUpdateOrDelete(const ClientServerMapping& m
       }
       memcpy(rcl_in_arena, buf.data(), buf.size());
       op->changelist = RowChangeList(Slice(rcl_in_arena, buf.size()));
+      op->force_overwrite = force_overwrite_;
     }
   } else if (op->type == RowOperationsPB::DELETE) {
     // Ensure that no other columns are set.

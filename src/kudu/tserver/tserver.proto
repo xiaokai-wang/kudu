@@ -143,6 +143,11 @@ message WriteRequestPB {
 
   // An authorization token with which to authorize this request.
   optional security.SignedTokenPB authz_token = 6;
+
+  // If the Operation is update, by default is to update the row using
+  // UpdatingType of the ColumnSchema. If force overwrite is set to true,
+  // the UpdatingType is OVERWRITE.
+  optional bool force_overwrite = 7;
 }
 
 message WriteResponsePB {

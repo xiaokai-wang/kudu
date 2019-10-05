@@ -255,7 +255,8 @@ Status PrintDecodedWriteRequestPB(const string& indent,
   RETURN_NOT_OK(SchemaFromPB(write.schema(), &request_schema));
 
   Arena arena(32 * 1024);
-  RowOperationsPBDecoder dec(&write.row_operations(), &request_schema, &tablet_schema, &arena);
+  RowOperationsPBDecoder dec(&write.row_operations(), &request_schema, &tablet_schema,
+                             write.force_overwrite(), &arena);
   vector<DecodedRowOperation> ops;
   RETURN_NOT_OK(dec.DecodeOperations<DecoderMode::WRITE_OPS>(&ops));
 

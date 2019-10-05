@@ -484,6 +484,7 @@ class DeltaPreparer : public PreparedDeltas {
   // State when prepared_flags_ & PREPARED_FOR_APPLY
   // ------------------------------------------------------------
   struct ColumnUpdate {
+    bool force_overwrite;
     rowid_t row_id;
     void* new_val_ptr;
     uint8_t new_val_buf[16];

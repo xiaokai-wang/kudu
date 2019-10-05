@@ -354,19 +354,24 @@ Status MetricEntity::CollectTo(MergedEntityMetrics* collections,
   auto* merge_rule = ::FindOrNull(merge_rules, prototype_->name());
   if (merge_rule) {
     entity_type = merge_rule->merge_to;
-    entity_id = attrs[merge_rule->attribute_to_merge_by];
+    auto entity_id_ptr = ::FindOrNull(attrs, merge_rule->attribute_to_merge_by);
+    if (!entity_id_ptr) {
+      return Status::NotFound(Substitute("attribute $0 not found in entity $1",
+                                         merge_rule->attribute_to_merge_by, entity_id));
+    }
+    entity_id = *entity_id_ptr;
   }
 
   MergedEntity e(entity_type, entity_id);
-  auto& table_collection = collections->emplace(std::make_pair(e, MergedMetrics())).first->second;
+  auto& entity_collection = collections->emplace(std::make_pair(e, MergedMetrics())).first->second;
   for (const auto& val : metrics) {
     const MetricPrototype* prototype = val.first;
     const scoped_refptr<Metric>& metric = val.second;
 
-    scoped_refptr<Metric> entry = FindPtrOrNull(table_collection, prototype);
+    scoped_refptr<Metric> entry = FindPtrOrNull(entity_collection, prototype);
     if (!entry) {
       scoped_refptr<Metric> new_metric = metric->snapshot();
-      InsertOrDie(&table_collection, new_metric->prototype(), new_metric);
+      InsertOrDie(&entity_collection, new_metric->prototype(), new_metric);
     } else {
       entry->MergeFrom(metric);
     }
@@ -703,9 +708,9 @@ void StringGauge::set_value(const string& value) {
   unique_values_.clear();
 }
 
-bool StringGauge::MergeFrom(const scoped_refptr<Metric>& other) {
+void StringGauge::MergeFrom(const scoped_refptr<Metric>& other) {
   if (PREDICT_FALSE(this == other.get())) {
-    return true;
+    return;
   }
   UpdateModificationEpoch();
 
@@ -715,11 +720,58 @@ bool StringGauge::MergeFrom(const scoped_refptr<Metric>& other) {
   std::lock_guard<simple_spinlock> l(lock_);
   FillUniqueValuesUnlocked();
   unique_values_.insert(other_values.begin(), other_values.end());
-  return true;
 }
 
 void StringGauge::WriteValue(JsonWriter* writer) const {
   writer->String(value());
+}
+
+//
+// MeanGauge
+//
+
+scoped_refptr<Metric> MeanGauge::snapshot() const {
+  std::lock_guard<simple_spinlock> l(lock_);
+  scoped_refptr<Metric> m
+    = new MeanGauge(down_cast<const GaugePrototype<double>*>(prototype_));
+  return m;
+}
+
+double MeanGauge::value() const {
+  std::lock_guard<simple_spinlock> l(lock_);
+  return total_count_ > 0 ? total_sum_ / total_count_
+                          : 0.0;
+}
+
+double MeanGauge::total_sum() const {
+  std::lock_guard<simple_spinlock> l(lock_);
+  return total_sum_;
+}
+
+double MeanGauge::total_count() const {
+  std::lock_guard<simple_spinlock> l(lock_);
+  return total_count_;
+}
+
+void MeanGauge::set_value(double total_sum, double total_count) {
+  std::lock_guard<simple_spinlock> l(lock_);
+  total_sum_ = total_sum;
+  total_count_ = total_count;
+}
+
+void MeanGauge::MergeFrom(const scoped_refptr<Metric>& other) {
+  if (PREDICT_FALSE(this == other.get())) {
+    return;
+  }
+
+  scoped_refptr<MeanGauge> other_ptr = down_cast<MeanGauge*>(other.get());
+  std::lock_guard<simple_spinlock> l(lock_);
+  total_sum_ += other_ptr->total_sum();
+  total_count_ += other_ptr->total_count();
+}
+
+void MeanGauge::WriteValue(JsonWriter* writer) const {
+  writer->Double(value());
 }
 
 //

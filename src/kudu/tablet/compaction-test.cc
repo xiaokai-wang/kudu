@@ -232,6 +232,62 @@ class TestCompaction : public KuduRowSetTest {
                                 &result));
   }
 
+  // OverWrite n_rows rows of data.
+  // Each row has the key (string key=hello <n*10 + delta>) and its 'val' column
+  // is set to new_val.
+  // If 'val' is even, 'nullable_val' is set to NULL. Otherwise, set to 'val'.
+  // Note that this is the opposite of InsertRow() above, so that the overwrites
+  // flop NULL to non-NULL and vice versa.
+  void OverWriteRows(RowSet *rowset, int n_rows, int delta, int32_t new_val) {
+    for (uint32_t i = 0; i < n_rows; i++) {
+      SCOPED_TRACE(i);
+      OverWriteRow(rowset, i * 10 + delta, new_val);
+    }
+  }
+
+  void OverWriteRow(RowSet *rowset, int row_key, int32_t new_val) {
+    ScopedTransaction tx(&mvcc_, clock_->Now());
+    tx.StartApplying();
+    OverWriteRowInTransaction(rowset, tx, row_key, new_val);
+    tx.Commit();
+  }
+
+  void OverWriteRowInTransaction(RowSet *rowset,
+                                 const ScopedTransaction& txn,
+                                 int row_key,
+                                 int32_t new_val) {
+    ColumnId col_id = schema_.column_id(schema_.find_column("val"));
+    ColumnId nullable_col_id = schema_.column_id(schema_.find_column("nullable_val"));
+
+    char keybuf[256];
+    faststring update_buf;
+    snprintf(keybuf, sizeof(keybuf), kRowKeyFormat, row_key);
+
+    update_buf.clear();
+    RowChangeListEncoder update(&update_buf);
+    update.AddColumnOverwrite(schema_.column_by_id(col_id), col_id, &new_val);
+    if (new_val % 2 == 0) {
+      update.AddColumnOverwrite(schema_.column_by_id(nullable_col_id),
+                                nullable_col_id, nullptr);
+    } else {
+      update.AddColumnOverwrite(schema_.column_by_id(nullable_col_id),
+                                nullable_col_id, &new_val);
+    }
+
+    RowBuilder rb(schema_.CreateKeyProjection());
+    rb.AddString(Slice(keybuf));
+    RowSetKeyProbe probe(rb.row());
+    ProbeStats stats;
+    OperationResultPB result;
+    ASSERT_OK(rowset->MutateRow(txn.timestamp(),
+                                probe,
+                                RowChangeList(update_buf),
+                                op_id_,
+                                nullptr,
+                                &stats,
+                                &result));
+  }
+
   void DeleteRows(RowSet* rowset, int n_rows) {
     DeleteRows(rowset, n_rows, 0);
   }
@@ -657,6 +713,165 @@ TEST_F(TestCompaction, TestDuplicatedGhostRowsMerging) {
                 "int32 nullable_val=NULL); Undo Mutations: [@70(SET val=9, nullable_val=NULL), "
                 "@60(DELETE), @50(REINSERT val=1, nullable_val=1), @40(SET val=9, "
                 "nullable_val=NULL), @30(DELETE), @20(REINSERT val=9, nullable_val=NULL), "
+                "@10(DELETE)]; Redo Mutations: [];", out[9]);
+}
+
+// Tests that the same rows, conditional update in DRS, it appears
+// only once on the compaction output but that the resulting row
+// includes the conditional result and all its mutations.
+TEST_F(TestCompaction, TestConditionalMinUpdatingMerging) {
+
+  ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
+  columnStorageAttributes.updating = KEEP_MIN;
+
+  ColumnSchema columnSchema = ColumnSchema("val", INT32, false, NULL,
+                                           NULL, columnStorageAttributes);
+  SchemaBuilder builder;
+  CHECK_OK(builder.AddKeyColumn("key", STRING));
+  CHECK_OK(builder.AddColumn(columnSchema, false));
+  CHECK_OK(builder.AddNullableColumn("nullable_val", INT32));
+  Schema schema_(builder.Build());
+
+  shared_ptr<DiskRowSet> rs1;
+  {
+    shared_ptr<MemRowSet> mrs;
+    ASSERT_OK(MemRowSet::Create(0, schema_, log_anchor_registry_.get(),
+                                mem_trackers_.tablet_tracker, &mrs));
+    InsertRows(mrs.get(), 10, 0);
+    FlushMRSAndReopenNoRoll(*mrs, schema_, &rs1);
+    ASSERT_NO_FATAL_FAILURE();
+  }
+  UpdateRows(rs1.get(), 10, 0, 1);
+
+  shared_ptr<DiskRowSet> result;
+  vector<shared_ptr<DiskRowSet> > all_rss;
+  all_rss.push_back(rs1);
+
+  SeedRandom();
+  // Shuffle the row sets to make sure we test different orderings
+  std::random_shuffle(all_rss.begin(), all_rss.end());
+
+  // Now compact all the drs and make sure we don't get duplicated keys on the output
+  CompactAndReopenNoRoll(all_rss, schema_, &result);
+
+  gscoped_ptr<CompactionInput> input;
+  ASSERT_OK(CompactionInput::Create(*result,
+                                    &schema_,
+                                    MvccSnapshot::CreateSnapshotIncludingAllTransactions(),
+                                    nullptr,
+                                    &input));
+  vector<string> out;
+  IterateInput(input.get(), &out);
+  ASSERT_EQ(out.size(), 10);
+  EXPECT_EQ(R"(RowIdxInBlock: 0; Base: (string key="hello 00000000", int32 val=0, )"
+                "int32 nullable_val=1); Undo Mutations: [@11(SET val=0, nullable_val=0), "
+                "@1(DELETE)]; Redo Mutations: [];", out[0]);
+  EXPECT_EQ(R"(RowIdxInBlock: 9; Base: (string key="hello 00000090", int32 val=1, )"
+                "int32 nullable_val=1); Undo Mutations: [@20(SET val=9, nullable_val=NULL), "
+                "@10(DELETE)]; Redo Mutations: [];", out[9]);
+}
+
+TEST_F(TestCompaction, TestConditionalMaxUpdatingMerging) {
+
+  ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
+  columnStorageAttributes.updating = KEEP_MAX;
+
+  ColumnSchema columnSchema = ColumnSchema("val", INT32, false, NULL,
+                                           NULL, columnStorageAttributes);
+  SchemaBuilder builder;
+  CHECK_OK(builder.AddKeyColumn("key", STRING));
+  CHECK_OK(builder.AddColumn(columnSchema, false));
+  CHECK_OK(builder.AddNullableColumn("nullable_val", INT32));
+  Schema schema_(builder.Build());
+
+  shared_ptr<DiskRowSet> rs1;
+  {
+    shared_ptr<MemRowSet> mrs;
+    ASSERT_OK(MemRowSet::Create(0, schema_, log_anchor_registry_.get(),
+                                mem_trackers_.tablet_tracker, &mrs));
+    InsertRows(mrs.get(), 10, 0);
+    FlushMRSAndReopenNoRoll(*mrs, schema_, &rs1);
+    ASSERT_NO_FATAL_FAILURE();
+  }
+  UpdateRows(rs1.get(), 10, 0, 1);
+
+  shared_ptr<DiskRowSet> result;
+  vector<shared_ptr<DiskRowSet> > all_rss;
+  all_rss.push_back(rs1);
+
+  SeedRandom();
+  // Shuffle the row sets to make sure we test different orderings
+  std::random_shuffle(all_rss.begin(), all_rss.end());
+
+  // Now compact all the drs and make sure we don't get duplicated keys on the output
+  CompactAndReopenNoRoll(all_rss, schema_, &result);
+
+  gscoped_ptr<CompactionInput> input;
+  ASSERT_OK(CompactionInput::Create(*result,
+                                    &schema_,
+                                    MvccSnapshot::CreateSnapshotIncludingAllTransactions(),
+                                    nullptr,
+                                    &input));
+  vector<string> out;
+  IterateInput(input.get(), &out);
+  ASSERT_EQ(out.size(), 10);
+  EXPECT_EQ(R"(RowIdxInBlock: 0; Base: (string key="hello 00000000", int32 val=1, )"
+                "int32 nullable_val=1); Undo Mutations: [@11(SET val=0, nullable_val=0), "
+                "@1(DELETE)]; Redo Mutations: [];", out[0]);
+  EXPECT_EQ(R"(RowIdxInBlock: 9; Base: (string key="hello 00000090", int32 val=9, )"
+                "int32 nullable_val=1); Undo Mutations: [@20(SET val=9, nullable_val=NULL), "
+                "@10(DELETE)]; Redo Mutations: [];", out[9]);
+}
+
+TEST_F(TestCompaction, TestConditionalOverWriteUpdatingMerging) {
+
+  ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
+  columnStorageAttributes.updating = KEEP_MIN;
+
+  ColumnSchema columnSchema = ColumnSchema("val", INT32, false, NULL,
+                                           NULL, columnStorageAttributes);
+  SchemaBuilder builder;
+  CHECK_OK(builder.AddKeyColumn("key", STRING));
+  CHECK_OK(builder.AddColumn(columnSchema, false));
+  CHECK_OK(builder.AddNullableColumn("nullable_val", INT32));
+  Schema schema_(builder.Build());
+
+  shared_ptr<DiskRowSet> rs1;
+  {
+    shared_ptr<MemRowSet> mrs;
+    ASSERT_OK(MemRowSet::Create(0, schema_, log_anchor_registry_.get(),
+                                mem_trackers_.tablet_tracker, &mrs));
+    InsertRows(mrs.get(), 10, 0);
+    FlushMRSAndReopenNoRoll(*mrs, schema_, &rs1);
+    ASSERT_NO_FATAL_FAILURE();
+  }
+  OverWriteRows(rs1.get(), 10, 0, 1);
+
+  shared_ptr<DiskRowSet> result;
+  vector<shared_ptr<DiskRowSet> > all_rss;
+  all_rss.push_back(rs1);
+
+  SeedRandom();
+  // Shuffle the row sets to make sure we test different orderings
+  std::random_shuffle(all_rss.begin(), all_rss.end());
+
+  // Now compact all the drs and make sure we don't get duplicated keys on the output
+  CompactAndReopenNoRoll(all_rss, schema_, &result);
+
+  gscoped_ptr<CompactionInput> input;
+  ASSERT_OK(CompactionInput::Create(*result,
+                                    &schema_,
+                                    MvccSnapshot::CreateSnapshotIncludingAllTransactions(),
+                                    nullptr,
+                                    &input));
+  vector<string> out;
+  IterateInput(input.get(), &out);
+  ASSERT_EQ(out.size(), 10);
+  EXPECT_EQ(R"(RowIdxInBlock: 0; Base: (string key="hello 00000000", int32 val=1, )"
+                "int32 nullable_val=1); Undo Mutations: [@11(SET val=0, nullable_val=0), "
+                "@1(DELETE)]; Redo Mutations: [];", out[0]);
+  EXPECT_EQ(R"(RowIdxInBlock: 9; Base: (string key="hello 00000090", int32 val=1, )"
+                "int32 nullable_val=1); Undo Mutations: [@20(SET val=9, nullable_val=NULL), "
                 "@10(DELETE)]; Redo Mutations: [];", out[9]);
 }
 

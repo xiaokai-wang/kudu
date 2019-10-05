@@ -1011,6 +1011,26 @@ Status ApplyMutationsAndGenerateUndos(const MvccSnapshot& snap,
                       "Unable to decode changelist.\n" + ERROR_LOG_CONTEXT);
 
     switch (redo_decoder.get_type()) {
+      case RowChangeList::kOverwrite:
+        DCHECK(!is_deleted) << "Got UPDATE for deleted row. " << ERROR_LOG_CONTEXT;
+
+        undo_encoder.SetToOverwrite();
+        RETURN_NOT_OK_LOG(redo_decoder.MutateRowAndCaptureChanges(
+            dst_row, static_cast<Arena*>(nullptr), &undo_encoder), ERROR,
+                           "Unable to apply overwrite undo.\n " + ERROR_LOG_CONTEXT);
+
+        // If all of the overwrites were for columns that we aren't projecting, we don't
+        // need to push them into the UNDO file.
+        if (undo_encoder.is_empty()) {
+          continue;
+        }
+
+        // create the UNDO mutation in the provided arena.
+        current_undo = Mutation::CreateInArena(arena, redo_mut->timestamp(),
+                                               undo_encoder.as_changelist());
+
+        SetHead(&undo_head, current_undo);
+        break;
       case RowChangeList::kUpdate: {
         DCHECK(!is_deleted) << "Got UPDATE for deleted row. " << ERROR_LOG_CONTEXT;
 

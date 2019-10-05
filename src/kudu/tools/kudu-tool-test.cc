@@ -134,6 +134,7 @@
 
 DECLARE_bool(hive_metastore_sasl_enabled);
 DECLARE_bool(show_values);
+DECLARE_bool(show_attributes);
 DECLARE_string(block_manager);
 DECLARE_string(hive_metastore_uris);
 
@@ -1108,7 +1109,8 @@ TEST_F(ToolTest, TestModeHelp) {
         "scan.*Scan rows from a table",
         "copy.*Copy table data to another table",
         "set_extra_config.*Change a extra configuration value on a table",
-        "get_extra_configs.*Get the extra configuration properties for a table"
+        "get_extra_configs.*Get the extra configuration properties for a table",
+        "statistics.*Get table statistics"
     };
     NO_FATALS(RunTestHelp("table", kTableModeRegexes));
   }
@@ -2922,6 +2924,8 @@ TEST_F(ToolTest, TestMasterList) {
 // (4)list tables
 // (5)scan a table
 // (6)copy a table
+// (7)alter a column
+// (8)delete a column
 TEST_F(ToolTest, TestDeleteTable) {
   NO_FATALS(StartExternalMiniCluster());
   shared_ptr<KuduClient> client;
@@ -3003,7 +3007,6 @@ TEST_F(ToolTest, TestRenameColumn) {
   workload.Setup();
 
   string master_addr = cluster_->master()->bound_rpc_addr().ToString();
-  string out;
   NO_FATALS(RunActionStdoutNone(Substitute("table rename_column $0 $1 $2 $3",
                                            master_addr, kTableName,
                                            kColumnName, kNewColumnName)));
@@ -3252,6 +3255,253 @@ TEST_P(ToolTestCopyTableParameterized, TestCopyTable) {
   }
 }
 
+TEST_F(ToolTest, TestAlterColumn) {
+  NO_FATALS(StartExternalMiniCluster());
+  const string& kTableName = "kudu.table.alter.column";
+  const string& kColumnName = "col.0";
+
+  KuduSchemaBuilder schema_builder;
+  schema_builder.AddColumn("key")
+      ->Type(client::KuduColumnSchema::INT32)
+      ->NotNull()
+      ->PrimaryKey();
+  schema_builder.AddColumn(kColumnName)
+      ->Type(client::KuduColumnSchema::INT32)
+      ->NotNull()
+      ->Compression(KuduColumnStorageAttributes::CompressionType::LZ4)
+      ->Encoding(KuduColumnStorageAttributes::EncodingType::BIT_SHUFFLE)
+      ->BlockSize(40960);
+  KuduSchema schema;
+  ASSERT_OK(schema_builder.Build(&schema));
+
+  // Create the table.
+  TestWorkload workload(cluster_.get());
+  workload.set_table_name(kTableName);
+  workload.set_schema(schema);
+  workload.set_num_replicas(1);
+  workload.Setup();
+
+  string master_addr = cluster_->master()->bound_rpc_addr().ToString();
+  shared_ptr<KuduClient> client;
+  ASSERT_OK(KuduClientBuilder()
+                .add_master_server_addr(master_addr)
+                .Build(&client));
+  shared_ptr<KuduTable> table;
+  FLAGS_show_attributes = true;
+
+  // Test a few error cases.
+  const auto check_bad_input = [&](const string& alter_type,
+                                   const string& alter_value,
+                                   const string& err) {
+    string stderr;
+    Status s = RunActionStderrString(
+      Substitute("table $0 $1 $2 $3 $4",
+                 alter_type, master_addr, kTableName, kColumnName, alter_value), &stderr);
+    ASSERT_TRUE(s.IsRuntimeError());
+    ASSERT_STR_CONTAINS(stderr, err);
+  };
+
+  // Set write_default value for a column.
+  NO_FATALS(RunActionStdoutNone(Substitute("table column_set_default $0 $1 $2 $3",
+                                           master_addr, kTableName, kColumnName, "[1024]")));
+  ASSERT_OK(client->OpenTable(kTableName, &table));
+  ASSERT_STR_CONTAINS(table->schema().ToString(), "1024");
+
+  // Remove write_default value for a column.
+  NO_FATALS(RunActionStdoutNone(Substitute("table column_remove_default $0 $1 $2",
+                                           master_addr, kTableName, kColumnName)));
+  ASSERT_OK(client->OpenTable(kTableName, &table));
+  ASSERT_STR_NOT_CONTAINS(table->schema().ToString(), "1024");
+
+  // Alter compression type for a column.
+  NO_FATALS(RunActionStdoutNone(Substitute("table column_set_compression $0 $1 $2 $3",
+                                           master_addr, kTableName, kColumnName,
+                                           "DEFAULT_COMPRESSION")));
+  ASSERT_OK(client->OpenTable(kTableName, &table));
+  ASSERT_STR_CONTAINS(table->schema().ToString(), "DEFAULT_COMPRESSION");
+  ASSERT_STR_NOT_CONTAINS(table->schema().ToString(), "LZ4");
+
+  // Test invalid compression type.
+  NO_FATALS(check_bad_input("column_set_compression",
+                            "UNKNOWN_COMPRESSION_TYPE",
+                            "Failed to parse compression type"));
+
+  // Alter encoding type for a column.
+  NO_FATALS(RunActionStdoutNone(Substitute("table column_set_encoding $0 $1 $2 $3",
+                                           master_addr, kTableName, kColumnName,
+                                           "PLAIN_ENCODING")));
+  ASSERT_OK(client->OpenTable(kTableName, &table));
+  ASSERT_STR_CONTAINS(table->schema().ToString(), "PLAIN_ENCODING");
+  ASSERT_STR_NOT_CONTAINS(table->schema().ToString(), "BIT_SHUFFLE");
+
+  // Test invalid encoding type.
+  NO_FATALS(check_bad_input("column_set_encoding",
+                            "UNKNOWN_ENCODING_TYPE",
+                            "Failed to parse encoding type"));
+
+  // Alter block_size for a column.
+  NO_FATALS(RunActionStdoutNone(Substitute("table column_set_block_size $0 $1 $2 $3",
+                                           master_addr, kTableName, kColumnName, "10240")));
+  ASSERT_OK(client->OpenTable(kTableName, &table));
+  ASSERT_STR_CONTAINS(table->schema().ToString(), "10240");
+  ASSERT_STR_NOT_CONTAINS(table->schema().ToString(), "40960");
+
+  // Test invalid block_size.
+  NO_FATALS(check_bad_input("column_set_block_size", "0", "Invalid block size:"));
+}
+
+TEST_F(ToolTest, TestColumnSetDefault) {
+  NO_FATALS(StartExternalMiniCluster());
+  const string& kTableName = "kudu.table.set.default";
+  const string& kIntColumn = "col.int";
+  const string& kStringColumn = "col.string";
+  const string& kBoolColumn = "col.bool";
+  const string& kFloatColumn = "col.float";
+  const string& kDoubleColumn = "col.double";
+  const string& kBinaryColumn = "col.binary";
+  const string& kUnixtimeMicrosColumn = "col.unixtime_micros";
+  const string& kDecimalColumn = "col.decimal";
+
+  KuduSchemaBuilder schema_builder;
+  schema_builder.AddColumn("key")
+      ->Type(client::KuduColumnSchema::INT32)
+      ->NotNull()
+      ->PrimaryKey();
+  schema_builder.AddColumn(kIntColumn)
+      ->Type(client::KuduColumnSchema::INT64);
+  schema_builder.AddColumn(kStringColumn)
+      ->Type(client::KuduColumnSchema::STRING);
+  schema_builder.AddColumn(kBoolColumn)
+      ->Type(client::KuduColumnSchema::BOOL);
+  schema_builder.AddColumn(kFloatColumn)
+      ->Type(client::KuduColumnSchema::FLOAT);
+  schema_builder.AddColumn(kDoubleColumn)
+      ->Type(client::KuduColumnSchema::DOUBLE);
+  schema_builder.AddColumn(kBinaryColumn)
+      ->Type(client::KuduColumnSchema::BINARY);
+  schema_builder.AddColumn(kUnixtimeMicrosColumn)
+      ->Type(client::KuduColumnSchema::UNIXTIME_MICROS);
+  schema_builder.AddColumn(kDecimalColumn)
+      ->Type(client::KuduColumnSchema::DECIMAL)
+      ->Precision(30)
+      ->Scale(4);
+  KuduSchema schema;
+  ASSERT_OK(schema_builder.Build(&schema));
+
+  // Create the table.
+  TestWorkload workload(cluster_.get());
+  workload.set_table_name(kTableName);
+  workload.set_schema(schema);
+  workload.set_num_replicas(1);
+  workload.Setup();
+
+  string master_addr = cluster_->master()->bound_rpc_addr().ToString();
+  shared_ptr<KuduClient> client;
+  ASSERT_OK(KuduClientBuilder()
+                .add_master_server_addr(master_addr)
+                .Build(&client));
+  shared_ptr<KuduTable> table;
+  FLAGS_show_attributes = true;
+
+  // Test setting write_default value for a column.
+  const auto check_set_defult = [&](const string& col_name,
+                                    const string& value,
+                                    const string& target_value) {
+    RunActionStdoutNone(Substitute("table column_set_default $0 $1 $2 $3",
+                                   master_addr, kTableName, col_name, value));
+    ASSERT_OK(client->OpenTable(kTableName, &table));
+    ASSERT_STR_CONTAINS(table->schema().ToString(), target_value);
+  };
+
+  // Test a few error cases.
+  const auto check_bad_input = [&](const string& col_name,
+                                   const string& value,
+                                   const string& err) {
+    string stderr;
+    Status s = RunActionStderrString(
+      Substitute("table column_set_default $0 $1 $2 $3",
+                 master_addr, kTableName, col_name, value), &stderr);
+    ASSERT_TRUE(s.IsRuntimeError());
+    ASSERT_STR_CONTAINS(stderr, err);
+  };
+
+  // Set write_default value for a int column.
+  NO_FATALS(check_set_defult(kIntColumn, "[-2]", "-2"));
+  NO_FATALS(check_bad_input(kIntColumn, "[\"string\"]", "unable to parse"));
+  NO_FATALS(check_bad_input(kIntColumn, "[123.4]", "unable to parse"));
+
+  // Set write_default value for a string column.
+  NO_FATALS(check_set_defult(kStringColumn, "[\"string_value\"]", "string_value"));
+  NO_FATALS(check_bad_input(kStringColumn, "[123]", "unable to parse"));
+  // Test empty string is a valid default value for a string column.
+  NO_FATALS(check_set_defult(kStringColumn, "[\"\"]", "\"\""));
+  NO_FATALS(check_set_defult(kStringColumn, "[null]", "\"\""));
+  // Test invalid input of an empty string.
+  NO_FATALS(check_bad_input(kStringColumn, "\"\"", "expected object array but got string"));
+  NO_FATALS(check_bad_input(kStringColumn, "[]", "you should provide one default value"));
+
+  // Set write_default value for a bool column.
+  NO_FATALS(check_set_defult(kBoolColumn, "[true]", "true"));
+  NO_FATALS(check_set_defult(kBoolColumn, "[false]", "false"));
+  NO_FATALS(check_bad_input(kBoolColumn, "[TRUE]", "JSON text is corrupt: Invalid value."));
+
+  // Set write_default value for a float column.
+  NO_FATALS(check_set_defult(kFloatColumn, "[1.23]", "1.23"));
+
+  // Set write_default value for a double column.
+  NO_FATALS(check_set_defult(kDoubleColumn, "[-1.2345]", "-1.2345"));
+
+  // Set write_default value for a binary column.
+  // Empty string tests is the same with string column.
+  NO_FATALS(check_set_defult(kBinaryColumn, "[\"binary_value\"]", "binary_value"));
+
+  // Set write_default value for a unixtime_micro column.
+  NO_FATALS(check_set_defult(kUnixtimeMicrosColumn, "[12345]", "12345"));
+
+  // Test setting write_default value for a decimal column.
+  NO_FATALS(check_bad_input(
+    kDecimalColumn,
+    "[123]",
+    "DECIMAL columns are not supported for setting default value by this tool"));
+}
+
+TEST_F(ToolTest, TestDeleteColumn) {
+  NO_FATALS(StartExternalMiniCluster());
+  const string& kTableName = "kudu.table.delete.column";
+  const string& kColumnName = "col.0";
+
+  KuduSchemaBuilder schema_builder;
+  schema_builder.AddColumn("key")
+      ->Type(client::KuduColumnSchema::INT32)
+      ->NotNull()
+      ->PrimaryKey();
+  schema_builder.AddColumn(kColumnName)
+      ->Type(client::KuduColumnSchema::INT32)
+      ->NotNull();
+  KuduSchema schema;
+  ASSERT_OK(schema_builder.Build(&schema));
+
+  // Create the table.
+  TestWorkload workload(cluster_.get());
+  workload.set_table_name(kTableName);
+  workload.set_schema(schema);
+  workload.set_num_replicas(1);
+  workload.Setup();
+
+  string master_addr = cluster_->master()->bound_rpc_addr().ToString();
+  shared_ptr<KuduClient> client;
+  ASSERT_OK(KuduClientBuilder()
+                .add_master_server_addr(master_addr)
+                .Build(&client));
+  shared_ptr<KuduTable> table;
+  ASSERT_OK(client->OpenTable(kTableName, &table));
+  ASSERT_STR_CONTAINS(table->schema().ToString(), kColumnName);
+  NO_FATALS(RunActionStdoutNone(Substitute("table delete_column $0 $1 $2",
+                                           master_addr, kTableName, kColumnName)));
+  ASSERT_OK(client->OpenTable(kTableName, &table));
+  ASSERT_STR_NOT_CONTAINS(table->schema().ToString(), kColumnName);
+}
+
 Status CreateLegacyHmsTable(HmsClient* client,
                             const string& hms_database_name,
                             const string& hms_table_name,
@@ -3346,15 +3596,13 @@ void ValidateHmsEntries(HmsClient* hms_client,
   ASSERT_EQ(hms_table.parameters[HmsClient::kStorageHandlerKey], HmsClient::kKuduStorageHandler);
   ASSERT_EQ(hms_table.parameters[HmsClient::kKuduMasterAddrsKey], master_addr);
 
-  if (hms_table.tableType == HmsClient::kManagedTable) {
+  if (HmsClient::IsSynchronized(hms_table)) {
     shared_ptr<KuduTable> kudu_table;
     ASSERT_OK(kudu_client->OpenTable(Substitute("$0.$1", database_name, table_name), &kudu_table));
     ASSERT_TRUE(boost::iequals(kudu_table->name(),
                                hms_table.parameters[hms::HmsClient::kKuduTableNameKey]));
     ASSERT_EQ(kudu_table->id(), hms_table.parameters[HmsClient::kKuduTableIdKey]);
-  }
-
-  if (hms_table.tableType == HmsClient::kExternalTable) {
+  } else {
     ASSERT_TRUE(ContainsKey(hms_table.parameters, HmsClient::kKuduTableNameKey));
     ASSERT_FALSE(ContainsKey(hms_table.parameters, HmsClient::kKuduTableIdKey));
   }
@@ -3429,16 +3677,34 @@ TEST_P(ToolTestKerberosParameterized, TestCheckAndAutomaticFixHmsMetadata) {
   shared_ptr<KuduClient> kudu_client;
   ASSERT_OK(cluster_->CreateClient(nullptr, &kudu_client));
 
+  // Need to pretend to be the master to allow the purge property change.
+  hive::EnvironmentContext master_ctx;
+  master_ctx.__set_properties({ std::make_pair(hms::HmsClient::kKuduMasterEventKey, "true") });
+
   // While the metastore integration is disabled create tables in Kudu and the
   // HMS with inconsistent metadata.
 
-  // Control case: the check tool should not flag this table.
+  // Control case: the check tool should not flag this managed table.
   shared_ptr<KuduTable> control;
   ASSERT_OK(CreateKuduTable(kudu_client, "default.control"));
   ASSERT_OK(kudu_client->OpenTable("default.control", &control));
   ASSERT_OK(hms_catalog.CreateTable(
         control->id(), control->name(), kUsername,
         KuduSchema::ToSchema(control->schema())));
+
+  // Control case: the check tool should not flag this external synchronized table.
+  shared_ptr<KuduTable> control_external;
+  ASSERT_OK(CreateKuduTable(kudu_client, "default.control_external"));
+  ASSERT_OK(kudu_client->OpenTable("default.control_external", &control_external));
+  ASSERT_OK(hms_catalog.CreateTable(
+      control_external->id(), control_external->name(), kUsername,
+      KuduSchema::ToSchema(control_external->schema()), HmsClient::kExternalTable));
+  hive::Table hms_control_external;
+  ASSERT_OK(hms_client.GetTable("default", "control_external", &hms_control_external));
+  hms_control_external.parameters[HmsClient::kKuduTableIdKey] = control_external->id();
+  hms_control_external.parameters[HmsClient::kExternalPurgeKey] = "true";
+  ASSERT_OK(hms_client.AlterTable("default", "control_external",
+      hms_control_external, master_ctx));
 
   // Test case: Upper-case names are handled specially in a few places.
   shared_ptr<KuduTable> test_uppercase;
@@ -3484,10 +3750,22 @@ TEST_P(ToolTestKerberosParameterized, TestCheckAndAutomaticFixHmsMetadata) {
       "not_a_table_id", "default.bad_id", kUsername,
       KuduSchema::ToSchema(bad_id->schema())));
 
-  // Test cases: orphan tables in the HMS.
+  // Test case: orphan table in the HMS.
   ASSERT_OK(hms_catalog.CreateTable(
         "orphan-hms-table-id", "default.orphan_hms_table", kUsername,
         SchemaBuilder().Build()));
+
+  // Test case: orphan external synchronized table in the HMS.
+  ASSERT_OK(hms_catalog.CreateTable(
+      "orphan-hms-table-id-external", "default.orphan_hms_table_external", kUsername,
+      SchemaBuilder().Build(), HmsClient::kExternalTable));
+  hive::Table hms_orphan_external;
+  ASSERT_OK(hms_client.GetTable("default", "orphan_hms_table_external", &hms_orphan_external));
+  hms_orphan_external.parameters[HmsClient::kExternalPurgeKey] = "true";
+  ASSERT_OK(hms_client.AlterTable("default", "orphan_hms_table_external",
+      hms_orphan_external, master_ctx));
+
+  // Test case: orphan legacy table in the HMS.
   ASSERT_OK(CreateLegacyHmsTable(&hms_client, "default", "orphan_hms_table_legacy_managed",
         "impala::default.orphan_hms_table_legacy_managed",
         master_addr, HmsClient::kManagedTable, kUsername));
@@ -3501,6 +3779,18 @@ TEST_P(ToolTestKerberosParameterized, TestCheckAndAutomaticFixHmsMetadata) {
   ASSERT_OK(kudu_client->OpenTable("impala::default.legacy_managed", &legacy_managed));
   ASSERT_OK(CreateLegacyHmsTable(&hms_client, "default", "legacy_managed",
       "impala::default.legacy_managed", master_addr, HmsClient::kManagedTable, kUsername));
+
+  // Test case: Legacy external purge table.
+  shared_ptr<KuduTable> legacy_purge;
+  ASSERT_OK(CreateKuduTable(kudu_client, "impala::default.legacy_purge"));
+  ASSERT_OK(kudu_client->OpenTable("impala::default.legacy_purge", &legacy_purge));
+  ASSERT_OK(CreateLegacyHmsTable(&hms_client, "default", "legacy_purge",
+      "impala::default.legacy_purge", master_addr, HmsClient::kExternalTable, kUsername));
+  hive::Table hms_legacy_purge;
+  ASSERT_OK(hms_client.GetTable("default", "legacy_purge", &hms_legacy_purge));
+  hms_legacy_purge.parameters[HmsClient::kExternalPurgeKey] = "true";
+  ASSERT_OK(hms_client.AlterTable("default", "legacy_purge",
+                                  hms_legacy_purge, master_ctx));
 
   // Test case: legacy external table (pointed at the legacy managed table).
   ASSERT_OK(CreateLegacyHmsTable(&hms_client, "default", "legacy_external",
@@ -3530,6 +3820,7 @@ TEST_P(ToolTestKerberosParameterized, TestCheckAndAutomaticFixHmsMetadata) {
 
   unordered_set<string> consistent_tables = {
     "default.control",
+    "default.control_external",
   };
 
   unordered_set<string> inconsistent_tables = {
@@ -3539,9 +3830,11 @@ TEST_P(ToolTestKerberosParameterized, TestCheckAndAutomaticFixHmsMetadata) {
     "default.inconsistent_master_addrs",
     "default.bad_id",
     "default.orphan_hms_table",
+    "default.orphan_hms_table_external",
     "default.orphan_hms_table_legacy_managed",
     "default.kudu_orphan",
     "default.legacy_managed",
+    "default.legacy_purge",
     "default.legacy_no_owner",
     "legacy_external",
     "legacy_hive_incompatible_name",
@@ -3597,6 +3890,7 @@ TEST_P(ToolTestKerberosParameterized, TestCheckAndAutomaticFixHmsMetadata) {
                    master_addr, hms_flags)));
   make_consistent({
     "default.orphan_hms_table",
+    "default.orphan_hms_table_external",
     "default.orphan_hms_table_legacy_managed",
   });
   NO_FATALS(check());
@@ -3616,6 +3910,7 @@ TEST_P(ToolTestKerberosParameterized, TestCheckAndAutomaticFixHmsMetadata) {
         Substitute("hms fix $0 --nofix_inconsistent_tables $1", master_addr, hms_flags)));
   make_consistent({
     "default.legacy_managed",
+    "default.legacy_purge",
     "legacy_external",
     "default.legacy_no_owner",
     "legacy_hive_incompatible_name",
@@ -3637,6 +3932,7 @@ TEST_P(ToolTestKerberosParameterized, TestCheckAndAutomaticFixHmsMetadata) {
 
   for (const string& table : {
     "control",
+    "control_external",
     "uppercase",
     "inconsistent_schema",
     "inconsistent_name_hms",
@@ -3644,6 +3940,7 @@ TEST_P(ToolTestKerberosParameterized, TestCheckAndAutomaticFixHmsMetadata) {
     "bad_id",
     "kudu_orphan",
     "legacy_managed",
+    "legacy_purge",
     "legacy_external",
     "legacy_hive_incompatible_name",
   }) {
@@ -3659,6 +3956,7 @@ TEST_P(ToolTestKerberosParameterized, TestCheckAndAutomaticFixHmsMetadata) {
   ASSERT_EQ(vector<string>({
     "default.bad_id",
     "default.control",
+    "default.control_external",
     "default.inconsistent_master_addrs",
     "default.inconsistent_name_hms",
     "default.inconsistent_schema",
@@ -3666,6 +3964,7 @@ TEST_P(ToolTestKerberosParameterized, TestCheckAndAutomaticFixHmsMetadata) {
     "default.legacy_hive_incompatible_name",
     "default.legacy_managed",
     "default.legacy_no_owner",
+    "default.legacy_purge",
     "default.uppercase",
     "my_db.table",
   }), kudu_tables);
@@ -3673,6 +3972,7 @@ TEST_P(ToolTestKerberosParameterized, TestCheckAndAutomaticFixHmsMetadata) {
   // Check that table ownership is preserved in upgraded legacy tables.
   for (auto p : vector<pair<string, string>>({
         make_pair("legacy_managed", kUsername),
+        make_pair("legacy_purge", kUsername),
         make_pair("legacy_no_owner", ""),
   })) {
     hive::Table table;
@@ -4634,7 +4934,7 @@ TEST_F(ToolTest, TestFsAddRemoveDataDirEndToEnd) {
   ASSERT_OK(mts->WaitStarted());
 }
 
-TEST_F(ToolTest, TestDumpFSWithNonDefaultMetadataDir) {
+TEST_F(ToolTest, TestCheckFSWithNonDefaultMetadataDir) {
   const string kTestDir = GetTestPath("test");
   ASSERT_OK(env_->CreateDir(kTestDir));
   string uuid;
@@ -4651,7 +4951,7 @@ TEST_F(ToolTest, TestDumpFSWithNonDefaultMetadataDir) {
   // enough arguments to open the FsManager, or else FS tools will not work.
   // The tool will fail in its own process. Catch its output.
   string stderr;
-  Status s = RunTool(Substitute("fs dump uuid --fs_wal_dir=$0", opts.wal_root),
+  Status s = RunTool(Substitute("fs check --fs_wal_dir=$0", opts.wal_root),
                     nullptr, &stderr, {}, {});
   ASSERT_TRUE(s.IsRuntimeError());
   ASSERT_STR_CONTAINS(s.ToString(), "process exited with non-zero status");
@@ -4661,10 +4961,9 @@ TEST_F(ToolTest, TestDumpFSWithNonDefaultMetadataDir) {
   // Providing the necessary arguments, the tool should work.
   string stdout;
   NO_FATALS(RunActionStdoutString(Substitute(
-      "fs dump uuid --fs_wal_dir=$0 --fs_metadata_dir=$1",
+      "fs check --fs_wal_dir=$0 --fs_metadata_dir=$1",
       opts.wal_root, opts.metadata_root), &stdout));
   SCOPED_TRACE(stdout);
-  ASSERT_EQ(uuid, stdout);
 }
 
 TEST_F(ToolTest, TestReplaceTablet) {
@@ -4914,8 +5213,13 @@ TEST_F(ToolTest, ClusterNameResolverFileCorrupt) {
               Substitute(R"*(clusters_info:)*""\n"
                          R"*(  $0:)*""\n"
                          R"*(    master_addresses: bad,masters,addresses)*", kClusterName),
+#ifdef __APPLE__
+              Substitute("Network error: Could not connect to the cluster: unable to resolve "
+                         "address for bad: nodename nor servname provided, or not known")));
+#else
               Substitute("Network error: Could not connect to the cluster: unable to resolve "
                          "address for bad: Name or service not known")));
+#endif
 }
 
 TEST_F(ToolTest, ClusterNameResolverNormal) {

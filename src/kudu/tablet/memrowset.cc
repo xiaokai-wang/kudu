@@ -625,7 +625,7 @@ Status MemRowSet::Iterator::ApplyMutationsToProjectedRow(
     if (decoder.is_delete()) {
       decoder.TwiddleDeleteStatus(&is_deleted_end);
     } else {
-      DCHECK(decoder.is_update() || decoder.is_reinsert());
+      DCHECK(decoder.is_update() || decoder.is_reinsert() || decoder.is_overwrite());
       if (decoder.is_reinsert()) {
         decoder.TwiddleDeleteStatus(&is_deleted_end);
       }
@@ -638,7 +638,7 @@ Status MemRowSet::Iterator::ApplyMutationsToProjectedRow(
         ColumnBlock dst_col = dst_row->column_block(mapping.first);
         RETURN_NOT_OK(decoder.ApplyToOneColumn(dst_row->row_index(), &dst_col,
                                                memrowset_->schema_nonvirtual(),
-                                               mapping.second, dst_arena));
+                                               mapping.second, dst_arena, REDO));
       }
     }
   }

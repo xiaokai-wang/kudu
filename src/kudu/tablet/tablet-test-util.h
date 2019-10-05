@@ -467,7 +467,7 @@ class MirroredDeltas {
         }
         RowChangeListDecoder decoder(changes);
         decoder.InitNoSafetyChecks();
-        RETURN_NOT_OK(decoder.ApplyToOneColumn(i, cb, projection, col_idx, &arena_));
+        RETURN_NOT_OK(decoder.ApplyToOneColumn(i, cb, projection, col_idx, &arena_, REDO));
       }
     }
     return Status::OK();

@@ -16,6 +16,7 @@
 // under the License.
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -35,19 +36,19 @@ namespace clock {
 // to keep the kernel's timekeeping up to date and in sync.
 class SystemNtp : public TimeService {
  public:
-  SystemNtp() = default;
+  SystemNtp();
 
-  // Ensure that the kernel's timekeeping status indicates that it is currently
-  // in sync, and initialize various internal parameters.
-  virtual Status Init() override;
+  Status Init() override {
+    return Status::OK();
+  }
 
-  virtual Status WalltimeWithError(uint64_t* now_usec, uint64_t* error_usec) override;
+  Status WalltimeWithError(uint64_t* now_usec, uint64_t* error_usec) override;
 
-  virtual int64_t skew_ppm() const override {
+  int64_t skew_ppm() const override {
     return skew_ppm_;
   }
 
-  virtual void DumpDiagnostics(std::vector<std::string>* log) const override;
+  void DumpDiagnostics(std::vector<std::string>* log) const override;
 
  private:
   // The scaling factor used to obtain ppms. From the adjtimex source:
@@ -57,7 +58,7 @@ class SystemNtp : public TimeService {
   static const uint64_t kMicrosPerSec;
 
   // The skew rate in PPM reported by the kernel.
-  uint64_t skew_ppm_ = 0;
+  std::atomic<int64_t> skew_ppm_;
 
   DISALLOW_COPY_AND_ASSIGN(SystemNtp);
 };

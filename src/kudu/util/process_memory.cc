@@ -86,7 +86,7 @@ ThreadSafeRandom* g_rand = nullptr;
 
 #ifdef TCMALLOC_ENABLED
 // Total amount of memory released since the last GC. If this
-// is greater than GC_RELEASE_SIZE, this will trigger a tcmalloc gc.
+// is greater than kGcReleaseSize, this will trigger a tcmalloc gc.
 Atomic64 g_released_memory_since_gc;
 
 // Size, in bytes, that is considered a large value for Release() (or Consume() with
@@ -275,7 +275,7 @@ bool SoftLimitExceeded(double* current_capacity_pct) {
 void MaybeGCAfterRelease(int64_t released_bytes) {
 #ifdef TCMALLOC_ENABLED
   int64_t now_released = base::subtle::NoBarrier_AtomicIncrement(
-      &g_released_memory_since_gc, -released_bytes);
+      &g_released_memory_since_gc, released_bytes);
   if (PREDICT_FALSE(now_released > kGcReleaseSize)) {
     base::subtle::NoBarrier_Store(&g_released_memory_since_gc, 0);
     GcTcmalloc();

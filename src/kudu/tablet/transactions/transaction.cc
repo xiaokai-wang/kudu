@@ -24,9 +24,8 @@ namespace tablet {
 
 using consensus::DriverType;
 
-Transaction::Transaction(TransactionState* state, DriverType type, TransactionType tx_type)
-    : state_(state),
-      type_(type),
+Transaction::Transaction(DriverType type, TransactionType tx_type)
+    : type_(type),
       tx_type_(tx_type) {
 }
 
@@ -81,6 +80,7 @@ TransactionMetrics::TransactionMetrics()
 
 void TransactionMetrics::Reset() {
   successful_inserts = 0;
+  successful_upserts = 0;
   successful_updates = 0;
   successful_deletes = 0;
   commit_wait_duration_usec = 0;

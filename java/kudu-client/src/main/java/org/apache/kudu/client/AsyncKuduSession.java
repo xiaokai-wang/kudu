@@ -177,6 +177,8 @@ public class AsyncKuduSession implements SessionConfiguration {
   private boolean ignoreAllDuplicateRows = false;
   private boolean ignoreAllNotFoundRows = false;
 
+  private boolean forceOverwrite = false;
+
   /**
    * Package-private constructor meant to be used via AsyncKuduClient
    * @param client client that creates this session
@@ -279,6 +281,16 @@ public class AsyncKuduSession implements SessionConfiguration {
   }
 
   @Override
+  public boolean isForceOverwrite() {
+    return forceOverwrite;
+  }
+
+  @Override
+  public void setForceOverwrite(boolean forceOverwrite) {
+    this.forceOverwrite = forceOverwrite;
+  }
+
+  @Override
   public int countPendingErrors() {
     return errorCollector.countErrors();
   }
@@ -376,7 +388,7 @@ public class AsyncKuduSession implements SessionConfiguration {
         Batch batch = batches.get(tabletId);
         if (batch == null) {
           batch = new Batch(operation.getTable(), tablet, ignoreAllDuplicateRows,
-              ignoreAllNotFoundRows);
+              ignoreAllNotFoundRows, isForceOverwrite());
           batches.put(tabletId, batch);
         }
         batch.add(operation, currentIndex++);
@@ -515,6 +527,16 @@ public class AsyncKuduSession implements SessionConfiguration {
     operation.setExternalConsistencyMode(consistencyMode);
     operation.setIgnoreAllDuplicateRows(ignoreAllDuplicateRows);
     operation.setIgnoreAllNotFoundRows(ignoreAllNotFoundRows);
+    if (operation.isSetForceOverwrite()) {
+      if (operation.isForceOverwrite() != this.isForceOverwrite()) {
+        Status statusIllegalState =
+          Status.IllegalState("forceOverwrite is set both by session and operation, " +
+                              "but value is different");
+        throw new NonRecoverableException(statusIllegalState);
+      }
+    } else {
+      operation.setForceOverwrite(this.isForceOverwrite());
+    }
 
     return client.sendRpcToTablet(operation)
         .addCallbackDeferring(resp -> {

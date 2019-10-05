@@ -45,6 +45,7 @@
 #include "kudu/util/faststring.h"
 #include "kudu/util/slice.h"
 #include "kudu/util/status.h"
+#include "key_encoder.h"
 
 // Check that two schemas are equal, yielding a useful error message in the case that
 // they are not.
@@ -126,12 +127,14 @@ struct ColumnStorageAttributes {
   ColumnStorageAttributes()
     : encoding(AUTO_ENCODING),
       compression(DEFAULT_COMPRESSION),
+      updating(OVERWRITE),
       cfile_block_size(0) {
   }
 
-  ColumnStorageAttributes(EncodingType enc, CompressionType cmp)
+  ColumnStorageAttributes(EncodingType enc, CompressionType cmp, UpdatingType upd)
     : encoding(enc),
       compression(cmp),
+      updating(upd),
       cfile_block_size(0) {
   }
 
@@ -139,6 +142,7 @@ struct ColumnStorageAttributes {
 
   EncodingType encoding;
   CompressionType compression;
+  UpdatingType updating;
 
   // The preferred block size for cfile blocks. If 0, uses the
   // server-wide default.
@@ -172,6 +176,7 @@ public:
   bool remove_default;
 
   boost::optional<EncodingType> encoding;
+  boost::optional<UpdatingType> updating;
   boost::optional<CompressionType> compression;
   boost::optional<int32_t> cfile_block_size;
 
@@ -306,6 +311,10 @@ class ColumnSchema {
     return is_nullable_ == other.is_nullable_ &&
            type_info()->type() == other.type_info()->type() &&
            type_attributes().EqualsForType(other.type_attributes(), type_info()->type());
+  }
+
+  UpdatingType GetUpdatingType() const {
+    return attributes_.updating;
   }
 
   // compare types in Equals function

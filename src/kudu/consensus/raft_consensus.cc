@@ -132,13 +132,6 @@ DEFINE_bool(raft_prepare_replacement_before_eviction, true,
 TAG_FLAG(raft_prepare_replacement_before_eviction, advanced);
 TAG_FLAG(raft_prepare_replacement_before_eviction, experimental);
 
-DEFINE_bool(raft_attempt_to_replace_replica_without_majority, false,
-            "When enabled, the replica replacement logic attempts to perform "
-            "desired Raft configuration changes even if the majority "
-            "of voter replicas is reported failed or offline. "
-            "Warning! This is only intended for testing.");
-TAG_FLAG(raft_attempt_to_replace_replica_without_majority, unsafe);
-
 DECLARE_int32(memory_limit_warn_threshold_percentage);
 
 // Metrics
@@ -1436,7 +1429,7 @@ Status RaftConsensus::UpdateReplica(const ConsensusRequestPB* request,
     queue_->UpdateLastIndexAppendedToLeader(request->last_idx_appended_to_leader());
 
     // Also prohibit voting for anyone for the minimum election timeout.
-    withhold_votes_until_ = MonoTime::Now() + MinimumElectionTimeout();
+    WithholdVotesUnlocked();
 
     // 1 - Early commit pending (and committed) transactions
 
@@ -1596,9 +1589,15 @@ Status RaftConsensus::UpdateReplica(const ConsensusRequestPB* request,
       s = log_synchronizer.WaitFor(
           MonoDelta::FromMilliseconds(FLAGS_raft_heartbeat_interval_ms));
       // If just waiting for our log append to finish lets snooze the timer.
-      // We don't want to fire leader election because we're waiting on our own log.
+      // We don't want to fire leader election nor accept vote requests because
+      // we're still processing the Raft message from the leader,
+      // waiting on our own log.
       if (s.IsTimedOut()) {
         SnoozeFailureDetector();
+        {
+          LockGuard l(lock_);
+          WithholdVotesUnlocked();
+        }
       }
     } while (s.IsTimedOut());
     RETURN_NOT_OK(s);
@@ -1723,9 +1722,15 @@ Status RaftConsensus::RequestVote(const VoteRequestPB* request,
   // will change to eject the abandoned node, but until that point, we don't want the
   // abandoned follower to disturb the other nodes.
   //
+  // 3) Other dynamic scenarios with a stale former leader
+  // This is a generalization of the case 1. It's possible that a stale former
+  // leader detects it's not a leader anymore at some point, but a majority
+  // of replicas has elected a new leader already.
+  //
   // See also https://ramcloud.stanford.edu/~ongaro/thesis.pdf
   // section 4.2.3.
-  if (!request->ignore_live_leader() && MonoTime::Now() < withhold_votes_until_) {
+  if (PREDICT_TRUE(!request->ignore_live_leader()) &&
+      MonoTime::Now() < withhold_votes_until_) {
     return RequestVoteRespondLeaderIsAlive(request, response);
   }
 
@@ -2846,6 +2851,12 @@ void RaftConsensus::SnoozeFailureDetector(boost::optional<string> reason_for_log
     }
     failure_detector_->Snooze(std::move(delta));
   }
+}
+
+void RaftConsensus::WithholdVotesUnlocked() {
+  DCHECK(lock_.is_locked());
+  withhold_votes_until_ = std::max(withhold_votes_until_,
+                                   MonoTime::Now() + MinimumElectionTimeout());
 }
 
 MonoDelta RaftConsensus::MinimumElectionTimeout() const {

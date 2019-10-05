@@ -26,11 +26,13 @@
 #include <gflags/gflags.h>
 #include <glog/logging.h>
 
+#include "kudu/clock/builtin_ntp.h"
 #include "kudu/clock/mock_ntp.h"
 #include "kudu/clock/system_ntp.h"
 #include "kudu/gutil/bind.h"
 #include "kudu/gutil/bind_helpers.h"
 #include "kudu/gutil/macros.h"
+#include "kudu/gutil/port.h"
 #include "kudu/gutil/strings/substitute.h"
 #include "kudu/util/debug/trace_event.h"
 #include "kudu/util/flag_tags.h"
@@ -60,17 +62,26 @@ TAG_FLAG(use_hybrid_clock, hidden);
 
 DEFINE_string(time_source, "system",
               "The clock source that HybridClock should use. Must be one of "
-              "'system' or 'mock' (for tests only)");
-TAG_FLAG(time_source, experimental);
+              "'system', 'builtin', or 'mock' (for tests only)");
+TAG_FLAG(time_source, evolving);
 DEFINE_validator(time_source, [](const char* /* flag_name */, const string& value) {
-    if (boost::iequals(value, "system") ||
-        boost::iequals(value, "mock")) {
-      return true;
-    }
-    LOG(ERROR) << "unknown value for 'time_source': '" << value << "'"
-               << " (expected one of 'system' or 'mock')";
-    return false;
-  });
+  if (boost::iequals(value, "system") ||
+      boost::iequals(value, "builtin") ||
+      boost::iequals(value, "mock")) {
+    return true;
+  }
+  LOG(ERROR) << "unknown value for 'time_source': '" << value << "'"
+             << " (expected one of 'system', 'builtin', or 'mock')";
+  return false;
+});
+
+DEFINE_int32(ntp_initial_sync_wait_secs, 60,
+             "Amount of time in seconds to wait for clock synchronisation at "
+             "startup. A value of zero means Kudu will fail to start "
+             "if the clock is unsynchronized. This flag can prevent Kudu from "
+             "crashing if it starts before NTP can synchronize the clock.");
+TAG_FLAG(ntp_initial_sync_wait_secs, advanced);
+TAG_FLAG(ntp_initial_sync_wait_secs, evolving);
 
 METRIC_DEFINE_gauge_uint64(server, hybrid_clock_timestamp,
                            "Hybrid Clock Timestamp",
@@ -116,20 +127,58 @@ HybridClock::HybridClock()
 
 Status HybridClock::Init() {
   if (boost::iequals(FLAGS_time_source, "mock")) {
-    time_service_.reset(new clock::MockNtp());
+    time_service_.reset(new clock::MockNtp);
   } else if (boost::iequals(FLAGS_time_source, "system")) {
 #ifndef __APPLE__
-    time_service_.reset(new clock::SystemNtp());
+    time_service_.reset(new clock::SystemNtp);
 #else
-    time_service_.reset(new clock::SystemUnsyncTime());
+    time_service_.reset(new clock::SystemUnsyncTime);
 #endif
+  } else if (boost::iequals(FLAGS_time_source, "builtin")) {
+    time_service_.reset(new clock::BuiltInNtp);
   } else {
     return Status::InvalidArgument("invalid NTP source", FLAGS_time_source);
   }
   RETURN_NOT_OK(time_service_->Init());
 
-  state_ = kInitialized;
+  // Make sure the underlying clock service is available (e.g., for NTP-based
+  // clock make sure it's synchronized with its NTP source). If requested, wait
+  // up to the specified timeout for the clock to become ready to use.
+  const auto wait_s = FLAGS_ntp_initial_sync_wait_secs;
+  const auto deadline = MonoTime::Now() + MonoDelta::FromSeconds(wait_s);
+  bool need_log = true;
+  Status s;
+  uint64_t now_usec;
+  uint64_t error_usec;
+  do {
+    s = time_service_->WalltimeWithError(&now_usec, &error_usec);
+    if (!s.IsServiceUnavailable()) {
+      break;
+    }
+    if (need_log) {
+      // Log about what's going on, just once.
+      if (wait_s > 0) {
+        LOG(INFO) << Substitute("waiting up to --ntp_initial_sync_wait_secs=$0 "
+                                "seconds for the clock to synchronize", wait_s);
+      } else {
+        LOG(INFO) << Substitute("not waiting for clock synchronization: "
+                                "--ntp_initial_sync_wait_secs=$0 is nonpositive",
+                                wait_s);
+      }
+      need_log = false;
+    }
+    SleepFor(MonoDelta::FromSeconds(1));
+  } while (MonoTime::Now() < deadline);
 
+  if (!s.ok()) {
+    time_service_->DumpDiagnostics(/* log= */nullptr);
+    return s.CloneAndPrepend("timed out waiting for clock synchronisation");
+  }
+
+  LOG(INFO) << Substitute("HybridClock initialized: "
+                          "now $0 us; error $1 us; skew $2 ppm",
+                          now_usec, error_usec, time_service_->skew_ppm());
+  state_ = kInitialized;
   return Status::OK();
 }
 

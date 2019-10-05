@@ -65,7 +65,7 @@ class Batch extends KuduRpc<BatchResponse> {
   private final EnumSet<ErrorCode> ignoredErrors;
 
   Batch(KuduTable table, LocatedTablet tablet, boolean ignoreAllDuplicateRows,
-        boolean ignoreAllNotFoundRows) {
+        boolean ignoreAllNotFoundRows, boolean forceOverwrite) {
     super(table, null, 0);
     // Build a set of ignored errors.
     Set<ErrorCode> ignoredErrors = new HashSet<>();
@@ -81,6 +81,7 @@ class Batch extends KuduRpc<BatchResponse> {
     } else {
       this.ignoredErrors = EnumSet.copyOf(ignoredErrors);
     }
+    this.forceOverwrite = forceOverwrite;
     this.tablet = tablet;
   }
 
@@ -145,6 +146,7 @@ class Batch extends KuduRpc<BatchResponse> {
     if (authzToken != null) {
       builder.setAuthzToken(authzToken);
     }
+    builder.setForceOverwrite(forceOverwrite);
     return builder.build();
   }
 
@@ -234,6 +236,7 @@ class Batch extends KuduRpc<BatchResponse> {
                       .add("operations", operations.size())
                       .add("tablet", tablet)
                       .add("ignoredErrors", Iterables.toString(ignoredErrors))
+                      .add("forceOverwrite", forceOverwrite)
                       .add("rpc", super.toString())
                       .toString();
   }

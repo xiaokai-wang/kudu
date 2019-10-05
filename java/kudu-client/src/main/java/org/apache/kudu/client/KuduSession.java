@@ -157,6 +157,14 @@ public class KuduSession implements SessionConfiguration {
   }
 
   @Override
+  public boolean isForceOverwrite() { return session.isForceOverwrite(); }
+
+  @Override
+  public void setForceOverwrite(boolean forceOverwrite) {
+    session.setForceOverwrite(forceOverwrite);
+  }
+
+  @Override
   public boolean hasPendingOperations() {
     return session.hasPendingOperations();
   }

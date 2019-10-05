@@ -86,7 +86,13 @@ enum HmsMode {
   // The HMS will be started and configured to use the Kudu plugin, and the
   // Kudu mini-cluster will be configured to synchronize with it.
   ENABLE_METASTORE_INTEGRATION = 2;
-};
+}
+
+enum UpdatingType {
+  OVERWRITE = 1;
+  KEEP_MAX = 2;
+  KEEP_MIN = 3;
+}
 
 // Holds detailed attributes for the column. Only certain fields will be set,
 // depending on the type of the column.
@@ -131,6 +137,8 @@ message ColumnSchemaPB {
 
   // The comment for the column.
   optional string comment = 12;
+
+  optional UpdatingType updating = 13 [default=OVERWRITE];
 }
 
 message ColumnSchemaDeltaPB {
@@ -145,6 +153,8 @@ message ColumnSchemaDeltaPB {
   optional int32 block_size = 8;
 
   optional string new_comment = 9;
+
+  optional UpdatingType updating = 10 [default=OVERWRITE];
 }
 
 message SchemaPB {
@@ -218,7 +228,7 @@ enum ExternalConsistencyMode {
 // - The earliest snapshot: this corresponds to the earliest kept undo records
 //   in the tablet, meaning the current state (Base) can be undone up to
 //   this snapshot.
-// - The latest snapshot: This corresponds to the instant beyond which no
+// - The latest snapshot: This corresponds to the instant beyond which
 //   no transaction will have an earlier timestamp. Usually this corresponds
 //   to whatever clock->Now() returns, but can be higher if the client propagates
 //   a timestamp (see below).

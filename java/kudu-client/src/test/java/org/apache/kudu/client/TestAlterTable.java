@@ -40,6 +40,7 @@ import org.junit.Test;
 import org.apache.kudu.ColumnSchema;
 import org.apache.kudu.ColumnSchema.CompressionAlgorithm;
 import org.apache.kudu.ColumnSchema.Encoding;
+import org.apache.kudu.ColumnSchema.Updating;
 import org.apache.kudu.Schema;
 import org.apache.kudu.Type;
 import org.apache.kudu.test.KuduTestHarness;
@@ -172,6 +173,7 @@ public class TestAlterTable {
     client.alterTable(tableName, new AlterTableOptions()
         .changeCompressionAlgorithm(col.getName(), CompressionAlgorithm.SNAPPY)
         .changeEncoding(col.getName(), Encoding.RLE)
+        .changeUpdating(col.getName(), Updating.KEEP_MAX)
         .changeDefault(col.getName(), 0));
 
     // Check for new values.
@@ -179,6 +181,7 @@ public class TestAlterTable {
     col = table.getSchema().getColumns().get(1);
     assertEquals(CompressionAlgorithm.SNAPPY, col.getCompressionAlgorithm());
     assertEquals(Encoding.RLE, col.getEncoding());
+    assertEquals(Updating.KEEP_MAX, col.getUpdating());
     assertEquals(0, col.getDefaultValue());
   }
 

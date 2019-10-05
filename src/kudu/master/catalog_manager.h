@@ -138,12 +138,12 @@ struct PersistentTabletInfo {
   SysTabletsEntryPB pb;
 };
 
-// The information about a single tablet which exists in the cluster,
+// The information about a single tablet which exists in the cluster.
 //
 // This object uses copy-on-write for the portions of data which are persisted
 // on disk. This allows the mutated data to be staged and written to disk
 // while readers continue to access the previous version. These portions
-// of data are in PersistentTableInfo above, and typically accessed using
+// of data are in PersistentTabletInfo above, and typically accessed using
 // TabletMetadataLock. For example:
 //
 //   TabletInfo* table = ...;
@@ -632,6 +632,12 @@ class CatalogManager : public tserver::TabletReplicaLookupIf {
   Status ListTables(const ListTablesRequestPB* req,
                     ListTablesResponsePB* resp,
                     boost::optional<const std::string&> user);
+
+  // Get table statistics. If 'user' is provided, checks if the user is
+  // authorized to get such statistics.
+  Status GetTableStatistics(const GetTableStatisticsRequestPB* req,
+                            GetTableStatisticsResponsePB* resp,
+                            boost::optional<const std::string&> user);
 
   // Lookup the tablets contained in the partition range of the request. If 'user'
   // is provided, checks that the user is authorized to get such information.

@@ -224,6 +224,13 @@ message SysNotificationLogEventIdPB {
   optional int64 latest_notification_log_event_id = 1;
 }
 
+// The on-disk entry in the sys.catalog table to represent the existence of
+// on-going tserver state (e.g. maintenance mode).
+message SysTServerStateEntryPB {
+  // TODO(awong): consider adding a timestamp here.
+  optional TServerStatePB state = 1;
+}
+
 ////////////////////////////////////////////////////////////
 // RPCs
 ////////////////////////////////////////////////////////////
@@ -535,6 +542,19 @@ message ListTablesResponsePB {
   repeated TableInfo tables = 2;
 }
 
+message GetTableStatisticsRequestPB {
+  required TableIdentifierPB table = 1;
+}
+
+message GetTableStatisticsResponsePB {
+  // The error, if an error occurred with this request.
+  optional MasterErrorPB error = 1;
+
+  // The table statistics from table metrics.
+  optional uint64 on_disk_size = 2;
+  optional uint64 live_row_count = 3;
+}
+
 message GetTableLocationsRequestPB {
   required TableIdentifierPB table = 1;
 
@@ -799,6 +819,51 @@ message ListTabletServersResponsePB {
   repeated Entry servers = 2;
 }
 
+// Representation of the state of a tablet server.
+// TODO(KUDU-1827): add state for decommissioning.
+enum TServerStatePB {
+  // Default value for backwards compatibility.
+  UNKNOWN_STATE = 0;
+
+  // No state for the tserver.
+  NONE = 1;
+
+  // New replicas are not added to the tserver, and failed replicas on the
+  // tserver are not re-replicated.
+  MAINTENANCE_MODE = 2;
+}
+
+message TServerStateChangePB {
+  // Representation of a change in tserver state.
+  enum StateChange {
+    // Default value for backwards compatibility.
+    UNKNOWN_STATE_CHANGE = 0;
+
+    // Transitions from having no state to being in maintenance mode. If the
+    // tserver is already in maintenance mode, this is a no-op.
+    ENTER_MAINTENANCE_MODE = 1;
+
+    // Transitions from being in maintenance mode to having no tserver state. If
+    // the tserver already has no state, this is a no-op.
+    EXIT_MAINTENANCE_MODE = 2;
+  }
+
+  // The tserver UUID on which to apply the state change.
+  optional string uuid = 1;
+
+  // The change in tserver state.
+  optional StateChange change = 2;
+}
+
+message ChangeTServerStateRequestPB {
+  // TODO(awong): consider setting tserver state in batches.
+  optional TServerStateChangePB change = 1;
+}
+
+message ChangeTServerStateResponsePB {
+  optional MasterErrorPB error = 1;
+}
+
 // GetMasterRegistrationRequest/Response: get the instance id and
 // HTTP/RPC addresses for this Master server.
 message GetMasterRegistrationRequestPB {
@@ -919,6 +984,11 @@ service MasterService {
   rpc ListTables(ListTablesRequestPB) returns (ListTablesResponsePB) {
     option (kudu.rpc.authz_method) = "AuthorizeClient";
   }
+
+  rpc GetTableStatistics(GetTableStatisticsRequestPB) returns (GetTableStatisticsResponsePB) {
+    option (kudu.rpc.authz_method) = "AuthorizeClient";
+  }
+
   rpc GetTableLocations(GetTableLocationsRequestPB) returns (GetTableLocationsResponsePB) {
     option (kudu.rpc.authz_method) = "AuthorizeClient";
   }
@@ -942,6 +1012,10 @@ service MasterService {
   }
   rpc ResetAuthzCache(ResetAuthzCacheRequestPB) returns
       (ResetAuthzCacheResponsePB) {
+    option (kudu.rpc.authz_method) = "AuthorizeSuperUser";
+  }
+  rpc ChangeTServerState(ChangeTServerStateRequestPB) returns
+      (ChangeTServerStateResponsePB) {
     option (kudu.rpc.authz_method) = "AuthorizeSuperUser";
   }
 

@@ -59,7 +59,7 @@ string RowChangeList::ToString(const Schema &schema) const {
   if (decoder.is_reinsert()) {
     ret = "REINSERT ";
   } else {
-    CHECK(decoder.is_update()) << "Unknown changelist type!";
+    CHECK(decoder.is_update() || decoder.is_overwrite()) << "Unknown changelist type!";
     ret = "SET ";
   }
 
@@ -128,11 +128,19 @@ void RowChangeListEncoder::AddColumnUpdate(const ColumnSchema& col_schema,
   EncodeColumnMutation(col_schema, col_id, cell_ptr);
 }
 
+void RowChangeListEncoder::AddColumnOverwrite(const ColumnSchema& col_schema,
+                                              int col_id,
+                                              const void *cell_ptr) {
+  SetToOverwrite();
+  EncodeColumnMutation(col_schema, col_id, cell_ptr);
+}
+
 void RowChangeListEncoder::EncodeColumnMutation(const ColumnSchema& col_schema,
                                                 int col_id,
                                                 const void* cell_ptr) {
   DCHECK_NE(RowChangeList::kUninitialized, type_);
-  DCHECK(type_ == RowChangeList::kUpdate || type_ == RowChangeList::kReinsert);
+  DCHECK(type_ == RowChangeList::kUpdate || type_ == RowChangeList::kReinsert
+         || type_ == RowChangeList::kOverwrite);
 
   Slice val_slice;
   if (cell_ptr != nullptr) {
@@ -154,7 +162,8 @@ void RowChangeListEncoder::EncodeColumnMutation(const ColumnSchema& col_schema,
 void RowChangeListEncoder::EncodeColumnMutationRaw(int col_id, bool is_null, Slice new_val) {
   // The type must have been set beforehand.
   DCHECK_NE(RowChangeList::kUninitialized, type_);
-  DCHECK(type_ == RowChangeList::kUpdate || type_ == RowChangeList::kReinsert);
+  DCHECK(type_ == RowChangeList::kUpdate || type_ == RowChangeList::kReinsert
+         || type_ == RowChangeList::kOverwrite);
 
   InlinePutVarint32(dst_, col_id);
   if (is_null) {
@@ -184,11 +193,11 @@ Status RowChangeListDecoder::Init() {
 
   remaining_.remove_prefix(1);
 
-  // We should discard empty UPDATE RowChangeLists, so if after getting
+  // We should discard empty UPDATE/OVERWRITE RowChangeLists, so if after getting
   // the type remaining_ is empty() return an error.
   // Note that REINSERTs might have empty changelists when reinserting a row on a tablet that
   // has only primary key columns.
-  if (is_update() && remaining_.empty()) {
+  if ((is_update() || is_overwrite()) && remaining_.empty()) {
     return Status::Corruption("empty changelist - expected column updates");
   }
   return Status::OK();
@@ -206,7 +215,7 @@ Status RowChangeListDecoder::ProjectChangeList(const DeltaProjector& projector,
     return Status::OK();
   }
 
-  DCHECK(decoder.is_reinsert() || decoder.is_update());
+  DCHECK(decoder.is_reinsert() || decoder.is_update() || decoder.is_overwrite());
 
   while (decoder.HasNext()) {
     DecodedUpdate dec;
@@ -230,7 +239,7 @@ Status RowChangeListDecoder::MutateRowAndCaptureChanges(RowBlockRow* dst_row,
                                                         Arena* arena,
                                                         RowChangeListEncoder* out) {
 
-  DCHECK(is_reinsert() || is_update());
+  DCHECK(is_reinsert() || is_update() || is_overwrite());
   DCHECK(out->is_initialized());
 
   const Schema* dst_schema = dst_row->schema();
@@ -257,8 +266,30 @@ Status RowChangeListDecoder::MutateRowAndCaptureChanges(RowBlockRow* dst_row,
     // save the old cell in 'out'
     out->EncodeColumnMutation(col_schema, dec.col_id, dst_cell.ptr());
 
-    // copy the new cell to the row
-    RETURN_NOT_OK(CopyCell(src, &dst_cell, arena));
+    //conditional update
+    if (is_update()) {
+      switch (col_schema.GetUpdatingType()) {
+        case KEEP_MAX:
+          if (col_schema.Compare(src.ptr(), dst_cell.mutable_ptr()) > 0) {
+            RETURN_NOT_OK(CopyCell(src, &dst_cell, arena));
+          }
+          break;
+        case KEEP_MIN:
+          if (col_schema.Compare(src.ptr(), dst_cell.mutable_ptr()) < 0) {
+            RETURN_NOT_OK(CopyCell(src, &dst_cell, arena));
+          }
+          break;
+        case OVERWRITE:
+          RETURN_NOT_OK(CopyCell(src, &dst_cell, arena));
+          break;
+        default:
+          /* none */
+          break;
+      }
+    } else {
+      // copy the new cell to the row
+      RETURN_NOT_OK(CopyCell(src, &dst_cell, arena));
+    }
   }
   return Status::OK();
 }
@@ -267,8 +298,9 @@ Status RowChangeListDecoder::MutateRowAndCaptureChanges(RowBlockRow* dst_row,
 
 Status RowChangeListDecoder::ApplyToOneColumn(size_t row_idx, ColumnBlock* dst_col,
                                               const Schema& dst_schema,
-                                              int col_idx, Arena *arena) {
-  DCHECK(is_reinsert() || is_update());
+                                              int col_idx, Arena *arena,
+                                              tablet::DeltaType deltaType) {
+  DCHECK(is_reinsert() || is_update() || is_overwrite());
 
   const ColumnSchema& col_schema = dst_schema.column(col_idx);
   ColumnId col_id = dst_schema.column_id(col_idx);
@@ -287,7 +319,32 @@ Status RowChangeListDecoder::ApplyToOneColumn(size_t row_idx, ColumnBlock* dst_c
 
     SimpleConstCell src(&col_schema, new_val);
     ColumnBlock::Cell dst_cell = dst_col->cell(row_idx);
-    RETURN_NOT_OK(CopyCell(src, &dst_cell, arena));
+
+    //conditional update
+    if (is_update() && deltaType == tablet::REDO) {
+      switch (col_schema.GetUpdatingType()) {
+        case KEEP_MAX:
+          if (col_schema.Compare(src.ptr(), dst_cell.mutable_ptr()) > 0) {
+            RETURN_NOT_OK(CopyCell(src, &dst_cell, arena));
+          }
+          break;
+        case KEEP_MIN:
+          if (col_schema.Compare(src.ptr(), dst_cell.mutable_ptr()) < 0) {
+            RETURN_NOT_OK(CopyCell(src, &dst_cell, arena));
+          }
+          break;
+        case OVERWRITE:
+          RETURN_NOT_OK(CopyCell(src, &dst_cell, arena));
+          break;
+        default:
+          /* none */
+          LOG(FATAL) << "The column updating type is not supported. updating type: "
+                     << col_schema.GetUpdatingType();
+      }
+    } else {
+      // copy the new cell to the row
+      RETURN_NOT_OK(CopyCell(src, &dst_cell, arena));
+    }
     // TODO: could potentially break; here if we're guaranteed to only have one update
     // per column in a RowChangeList (which would make sense!)
   }
@@ -305,7 +362,7 @@ Status RowChangeListDecoder::RemoveColumnIdsFromChangeList(const RowChangeList& 
     return Status::OK();
   }
 
-  DCHECK(decoder.is_reinsert() || decoder.is_update());
+  DCHECK(decoder.is_reinsert() || decoder.is_update() || decoder.is_overwrite());
 
   while (decoder.HasNext()) {
     DecodedUpdate dec;

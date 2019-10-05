@@ -30,6 +30,7 @@ import org.apache.yetus.audience.InterfaceAudience;
 import org.apache.yetus.audience.InterfaceStability;
 
 import org.apache.kudu.ColumnSchema;
+import org.apache.kudu.ColumnSchema.Updating;
 import org.apache.kudu.Common;
 import org.apache.kudu.Type;
 import org.apache.kudu.client.ProtobufHelper.SchemaPBConversionFlags;
@@ -227,6 +228,24 @@ public class AlterTableOptions {
     alterBuilder.setDelta(
         Common.ColumnSchemaDeltaPB.newBuilder().setName(name)
             .setCompression(ca.getInternalPbType()));
+    step.setAlterColumn(alterBuilder);
+    return this;
+  }
+
+  /**
+   * Change the updating used for a column.
+   * @param name name of the column
+   * @param updating the new updating
+   * @return this instance
+   */
+  public AlterTableOptions changeUpdating(String name, Updating updating) {
+    AlterTableRequestPB.Step.Builder step = pb.addAlterSchemaStepsBuilder();
+    step.setType(AlterTableRequestPB.StepType.ALTER_COLUMN);
+    AlterTableRequestPB.AlterColumn.Builder alterBuilder =
+            AlterTableRequestPB.AlterColumn.newBuilder();
+    alterBuilder.setDelta(
+            Common.ColumnSchemaDeltaPB.newBuilder().setName(name)
+                    .setUpdating(updating.getInternalPbType()));
     step.setAlterColumn(alterBuilder);
     return this;
   }

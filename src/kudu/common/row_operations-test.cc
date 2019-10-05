@@ -844,7 +844,7 @@ void CheckExceedCellLimit(const Schema& client_schema,
 
   Arena arena(1024*1024);
   Schema schema = client_schema.CopyWithColumnIds();
-  RowOperationsPBDecoder decoder(&pb, &client_schema, &schema, &arena);
+  RowOperationsPBDecoder decoder(&pb, &client_schema, &schema, false, &arena);
   vector<DecodedRowOperation> ops;
   Status s;
   switch (op_type) {

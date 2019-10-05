@@ -193,7 +193,7 @@ class TestMemRowSet : public KuduTest {
     RowChangeListEncoder update(&mutation_buf_);
     update.AddColumnOverwrite(schema_.column(1), schema_.column_id(1), &new_val);
 
-    RowBuilder rb(key_schema_);
+    RowBuilder rb(&key_schema_);
     rb.AddString(Slice(key));
     RowSetKeyProbe probe(rb.row());
     ProbeStats stats;

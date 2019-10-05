@@ -409,20 +409,12 @@ Status DeltaPreparer<Traits>::ApplyUpdates(size_t col_to_apply, ColumnBlock* dst
           RETURN_NOT_OK(CopyCell(src, &dst_cell, dst->arena()));
           break;
         case KEEP_MAX:
-          if (!dst_cell.is_nullable()) {
-            if (col_schema->Compare(src.ptr(), dst_cell.mutable_ptr()) > 0) {
-              RETURN_NOT_OK(CopyCell(src, &dst_cell, dst->arena()));
-            }
-          } else {
+          if (col_schema->Compare(src.ptr(), dst_cell.mutable_ptr()) > 0) {
             RETURN_NOT_OK(CopyCell(src, &dst_cell, dst->arena()));
           }
           break;
         case KEEP_MIN:
-          if (!dst_cell.is_nullable()) {
-            if (col_schema->Compare(src.ptr(), dst_cell.mutable_ptr()) < 0) {
-              RETURN_NOT_OK(CopyCell(src, &dst_cell, dst->arena()));
-            }
-          } else {
+          if (col_schema->Compare(src.ptr(), dst_cell.mutable_ptr()) < 0) {
             RETURN_NOT_OK(CopyCell(src, &dst_cell, dst->arena()));
           }
           break;

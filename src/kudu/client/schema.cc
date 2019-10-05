@@ -267,7 +267,6 @@ KuduColumnSpec* KuduColumnSpec::Encoding(
 
 KuduColumnSpec* KuduColumnSpec::Updating(
     KuduColumnStorageAttributes::UpdatingType updating) {
-  data_->has_updating = true;
   data_->updating = updating;
   return this;
 }

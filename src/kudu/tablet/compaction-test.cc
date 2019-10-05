@@ -274,7 +274,8 @@ class TestCompaction : public KuduRowSetTest {
                                 nullable_col_id, &new_val);
     }
 
-    RowBuilder rb(schema_.CreateKeyProjection());
+    Schema proj_key = schema_.CreateKeyProjection();
+    RowBuilder rb(&proj_key);
     rb.AddString(Slice(keybuf));
     RowSetKeyProbe probe(rb.row());
     ProbeStats stats;

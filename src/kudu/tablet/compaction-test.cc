@@ -725,8 +725,8 @@ TEST_F(TestCompaction, TestConditionalMinUpdatingMerging) {
   ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
   columnStorageAttributes.updating = KEEP_MIN;
 
-  ColumnSchema columnSchema = ColumnSchema("val", INT32, false, NULL,
-                                           NULL, columnStorageAttributes);
+  ColumnSchema columnSchema = ColumnSchema("val", INT32, false, nullptr,
+                                           nullptr, columnStorageAttributes);
   SchemaBuilder builder;
   CHECK_OK(builder.AddKeyColumn("key", STRING));
   CHECK_OK(builder.AddColumn(columnSchema, false));
@@ -777,8 +777,8 @@ TEST_F(TestCompaction, TestConditionalMaxUpdatingMerging) {
   ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
   columnStorageAttributes.updating = KEEP_MAX;
 
-  ColumnSchema columnSchema = ColumnSchema("val", INT32, false, NULL,
-                                           NULL, columnStorageAttributes);
+  ColumnSchema columnSchema = ColumnSchema("val", INT32, false, nullptr,
+                                           nullptr, columnStorageAttributes);
   SchemaBuilder builder;
   CHECK_OK(builder.AddKeyColumn("key", STRING));
   CHECK_OK(builder.AddColumn(columnSchema, false));
@@ -829,8 +829,8 @@ TEST_F(TestCompaction, TestConditionalOverWriteUpdatingMerging) {
   ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
   columnStorageAttributes.updating = KEEP_MIN;
 
-  ColumnSchema columnSchema = ColumnSchema("val", INT32, false, NULL,
-                                           NULL, columnStorageAttributes);
+  ColumnSchema columnSchema = ColumnSchema("val", INT32, false, nullptr,
+                                           nullptr, columnStorageAttributes);
   SchemaBuilder builder;
   CHECK_OK(builder.AddKeyColumn("key", STRING));
   CHECK_OK(builder.AddColumn(columnSchema, false));

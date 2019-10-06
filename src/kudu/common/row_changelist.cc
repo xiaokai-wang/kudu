@@ -299,7 +299,7 @@ Status RowChangeListDecoder::MutateRowAndCaptureChanges(RowBlockRow* dst_row,
 Status RowChangeListDecoder::ApplyToOneColumn(size_t row_idx, ColumnBlock* dst_col,
                                               const Schema& dst_schema,
                                               int col_idx, Arena *arena,
-                                              tablet::DeltaType deltaType) {
+                                              tablet::DeltaType delta_type) {
   DCHECK(is_reinsert() || is_update() || is_overwrite());
 
   const ColumnSchema& col_schema = dst_schema.column(col_idx);
@@ -321,7 +321,7 @@ Status RowChangeListDecoder::ApplyToOneColumn(size_t row_idx, ColumnBlock* dst_c
     ColumnBlock::Cell dst_cell = dst_col->cell(row_idx);
 
     //conditional update
-    if (is_update() && deltaType == tablet::REDO) {
+    if (is_update() && delta_type == tablet::REDO) {
       switch (col_schema.GetUpdatingType()) {
         case KEEP_MAX:
           if (col_schema.Compare(src.ptr(), dst_cell.mutable_ptr()) > 0) {
@@ -345,7 +345,7 @@ Status RowChangeListDecoder::ApplyToOneColumn(size_t row_idx, ColumnBlock* dst_c
       // copy the new cell to the row
       RETURN_NOT_OK(CopyCell(src, &dst_cell, arena));
     }
-    // TODO: could potentially break; here if we're guaranteed to only have one update
+    // TODO(unknown): could potentially break; here if we're guaranteed to only have one update
     // per column in a RowChangeList (which would make sense!)
   }
   return Status::OK();

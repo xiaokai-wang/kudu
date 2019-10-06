@@ -37,6 +37,7 @@
 #include "kudu/clock/logical_clock.h"
 #include "kudu/common/columnblock.h"
 #include "kudu/common/common.pb.h"
+#include "kudu/common/row.h"
 #include "kudu/common/row_changelist.h"
 #include "kudu/common/rowblock.h"
 #include "kudu/common/rowid.h"
@@ -157,12 +158,12 @@ class TestDeltaMemStore : public KuduTest {
                                uint32_t row_idx,
                                size_t col_idx,
                                ColumnBlock *cb,
-                               UpdatingType updatingType) {
+                               UpdatingType updating_type) {
     ColumnId columnId(col_idx);
 
     ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
-    columnStorageAttributes.updating = updatingType;
-    ColumnSchema col_schema("col3", INT32, false, NULL, NULL, columnStorageAttributes);
+    columnStorageAttributes.updating = updating_type;
+    ColumnSchema col_schema("col3", UINT32, false, nullptr, nullptr, columnStorageAttributes);
 
     Schema single_col_projection({ col_schema },
                                  { columnId },
@@ -178,7 +179,7 @@ class TestDeltaMemStore : public KuduTest {
     }
     ASSERT_OK(s);
 
-    int32_t *value = new int32_t(0);
+    uint32_t *value = new uint32_t(0);
     SimpleConstCell src(&col_schema, static_cast<const void *>(value));
     ColumnBlock::Cell dst_cell = cb->cell(0);
     CopyCell(src, &dst_cell, cb->arena());
@@ -518,8 +519,8 @@ TEST_F(TestDeltaMemStore, TestMaxUpdateTxn) {
   ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
   columnStorageAttributes.updating = KEEP_MAX;
 
-  ColumnSchema columnSchema = ColumnSchema("col3", INT32, false, NULL,
-                                           NULL, columnStorageAttributes);
+  ColumnSchema columnSchema = ColumnSchema("col3", UINT32, false, nullptr,
+                                           nullptr, columnStorageAttributes);
   SchemaBuilder builder;
   CHECK_OK(builder.AddColumn("col0", STRING));
   CHECK_OK(builder.AddColumn("col1", STRING));
@@ -534,7 +535,7 @@ TEST_F(TestDeltaMemStore, TestMaxUpdateTxn) {
     ScopedTransaction tx2(&mvcc_, clock_->Now());
 
     tx2.StartApplying();
-    int32_t value = 1;
+    uint32_t value = 1;
     update.AddColumnUpdate(schema_.column(3),
                            schema_.column_id(3), &value);
     ASSERT_OK(dms_->Update(tx2.timestamp(), 123, RowChangeList(update_buf), op_id_));
@@ -543,7 +544,7 @@ TEST_F(TestDeltaMemStore, TestMaxUpdateTxn) {
 
     tx1.StartApplying();
     update.Reset();
-    int32_t value_two = 2;
+    uint32_t value_two = 2;
     update.AddColumnUpdate(schema_.column(3),
                            schema_.column_id(3), &value_two);
     ASSERT_OK(dms_->Update(tx1.timestamp(), 123, RowChangeList(update_buf), op_id_));
@@ -567,8 +568,8 @@ TEST_F(TestDeltaMemStore, TestMinUpdateTxn) {
   ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
   columnStorageAttributes.updating = KEEP_MIN;
 
-  ColumnSchema columnSchema = ColumnSchema("col3", INT32, false, NULL,
-                                           NULL, columnStorageAttributes);
+  ColumnSchema columnSchema = ColumnSchema("col3", UINT32, false, nullptr,
+                                           nullptr, columnStorageAttributes);
   SchemaBuilder builder;
   CHECK_OK(builder.AddColumn("col0", STRING));
   CHECK_OK(builder.AddColumn("col1", STRING));
@@ -583,7 +584,7 @@ TEST_F(TestDeltaMemStore, TestMinUpdateTxn) {
     ScopedTransaction tx2(&mvcc_, clock_->Now());
 
     tx2.StartApplying();
-    int32_t value = 2;
+    uint32_t value = 2;
     update.AddColumnUpdate(schema_.column(3),
                            schema_.column_id(3), &value);
     ASSERT_OK(dms_->Update(tx2.timestamp(), 123, RowChangeList(update_buf), op_id_));
@@ -592,7 +593,7 @@ TEST_F(TestDeltaMemStore, TestMinUpdateTxn) {
 
     tx1.StartApplying();
     update.Reset();
-    int32_t value_two = 0;
+    uint32_t value_two = 0;
     update.AddColumnUpdate(schema_.column(3),
                            schema_.column_id(3), &value_two);
     ASSERT_OK(dms_->Update(tx1.timestamp(), 123, RowChangeList(update_buf), op_id_));
@@ -616,8 +617,8 @@ TEST_F(TestDeltaMemStore, TestOverWriteUpdateTxn) {
   ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
   columnStorageAttributes.updating = KEEP_MIN;
 
-  ColumnSchema columnSchema = ColumnSchema("col3", INT32, false, NULL,
-                                           NULL, columnStorageAttributes);
+  ColumnSchema columnSchema = ColumnSchema("col3", UINT32, false, nullptr,
+                                           nullptr, columnStorageAttributes);
   SchemaBuilder builder;
   CHECK_OK(builder.AddColumn("col0", STRING));
   CHECK_OK(builder.AddColumn("col1", STRING));
@@ -632,7 +633,7 @@ TEST_F(TestDeltaMemStore, TestOverWriteUpdateTxn) {
     ScopedTransaction tx2(&mvcc_, clock_->Now());
 
     tx2.StartApplying();
-    int32_t value = 0;
+    uint32_t value = 0;
     update.AddColumnOverwrite(schema_.column(3),
                               schema_.column_id(3), &value);
     ASSERT_OK(dms_->Update(tx2.timestamp(), 123, RowChangeList(update_buf), op_id_));
@@ -641,7 +642,7 @@ TEST_F(TestDeltaMemStore, TestOverWriteUpdateTxn) {
 
     tx1.StartApplying();
     update.Reset();
-    int32_t value_two = 1;
+    uint32_t value_two = 1;
     update.AddColumnOverwrite(schema_.column(3),
                               schema_.column_id(3), &value_two);
     ASSERT_OK(dms_->Update(tx1.timestamp(), 123, RowChangeList(update_buf), op_id_));

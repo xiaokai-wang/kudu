@@ -165,7 +165,7 @@ void RowOperationsPBEncoder::Add(RowOperationsPB::Type op_type, const KuduPartia
 RowOperationsPBDecoder::RowOperationsPBDecoder(const RowOperationsPB* pb,
                                                const Schema* client_schema,
                                                const Schema* tablet_schema,
-                                               const bool force_overwrite,
+                                               bool force_overwrite,
                                                Arena* dst_arena)
   : pb_(pb),
     client_schema_(client_schema),

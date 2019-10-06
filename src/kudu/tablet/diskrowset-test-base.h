@@ -179,11 +179,11 @@ class TestRowSet : public KuduRowSetTest {
                               uint32_t row_idx,
                               uint32_t new_val,
                               OperationResultPB* result,
-                              UpdatingType updatingType)  {
+                              UpdatingType updating_type)  {
     ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
-    columnStorageAttributes.updating = updatingType;
-    ColumnSchema columnSchema = ColumnSchema("val", UINT32, false, NULL,
-                                             NULL, columnStorageAttributes);
+    columnStorageAttributes.updating = updating_type;
+    ColumnSchema columnSchema = ColumnSchema("val", UINT32, false, nullptr,
+                                             nullptr, columnStorageAttributes);
     SchemaBuilder builder;
     CHECK_OK(builder.AddKeyColumn("key", STRING));
     CHECK_OK(builder.AddColumn(columnSchema, false));
@@ -310,12 +310,12 @@ class TestRowSet : public KuduRowSetTest {
 
   void ConditionalVerifyRandomRead(const DiskRowSet& rs, const Slice& row_key,
                                    const std::string& expected_val,
-                                   UpdatingType updatingType,
+                                   UpdatingType updating_type,
                                    Timestamp timestamp) {
     ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
-    columnStorageAttributes.updating = updatingType;
-    ColumnSchema columnSchema = ColumnSchema("val", UINT32, false, NULL,
-                                             NULL, columnStorageAttributes);
+    columnStorageAttributes.updating = updating_type;
+    ColumnSchema columnSchema = ColumnSchema("val", UINT32, false, nullptr,
+                                             nullptr, columnStorageAttributes);
     SchemaBuilder builder;
     CHECK_OK(builder.AddKeyColumn("key", STRING));
     CHECK_OK(builder.AddColumn(columnSchema, false));
@@ -328,8 +328,10 @@ class TestRowSet : public KuduRowSetTest {
     spec.AddPredicate(pred);
     spec.OptimizeScan(schema_, &arena, &pool, true);
 
+    MvccSnapshot snap(timestamp);
     RowIteratorOptions opts;
     opts.projection = &schema_;
+    opts.snap_to_include = snap;
     std::unique_ptr<RowwiseIterator> row_iter;
     CHECK_OK(rs.NewRowIterator(opts, &row_iter));
     CHECK_OK(row_iter->Init(&spec));

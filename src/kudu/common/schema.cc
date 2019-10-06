@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <unordered_set>
 
+#include "kudu/common/key_encoder.h"
 #include "kudu/common/row.h"
 #include "kudu/common/rowblock.h" // IWYU pragma: keep
 #include "kudu/gutil/map-util.h"

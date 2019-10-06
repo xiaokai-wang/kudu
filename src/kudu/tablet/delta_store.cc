@@ -25,6 +25,7 @@
 #include <glog/logging.h>
 
 #include "kudu/common/columnblock.h"
+#include "kudu/common/common.pb.h"
 #include "kudu/common/row.h"
 #include "kudu/common/row_changelist.h"
 #include "kudu/common/rowblock.h"
@@ -581,7 +582,8 @@ void DeltaPreparer<Traits>::UpdateDeletionState(RowChangeList::ChangeType op) {
       deletion_state_ = UNKNOWN;
     }
   } else {
-    DCHECK(op == RowChangeList::kUpdate || op == RowChangeList::kReinsert);
+    DCHECK(op == RowChangeList::kUpdate || op == RowChangeList::kReinsert
+           || op == RowChangeList::kOverwrite);
     if (op == RowChangeList::kReinsert) {
       DCHECK_NE(deletion_state_, REINSERTED);
       if (deletion_state_ == UNKNOWN) {

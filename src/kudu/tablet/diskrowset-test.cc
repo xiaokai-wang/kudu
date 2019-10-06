@@ -17,6 +17,8 @@
 
 #include "kudu/tablet/diskrowset.h"
 
+#include <unistd.h>
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>

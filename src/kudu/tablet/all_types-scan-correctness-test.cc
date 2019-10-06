@@ -292,11 +292,14 @@ public:
     AlterSchema(builder.Build());
     altered_schema_ = Schema({ColumnSchema("key", INT32),
                      ColumnSchema("val_a", rowops_.type_, true, nullptr, nullptr,
-                         ColumnStorageAttributes(rowops_.encoding_, DEFAULT_COMPRESSION, OVERWRITE)),
+                         ColumnStorageAttributes(rowops_.encoding_,
+                                                 DEFAULT_COMPRESSION, OVERWRITE)),
                      ColumnSchema("val_b", rowops_.type_, true, nullptr, nullptr,
-                         ColumnStorageAttributes(rowops_.encoding_, DEFAULT_COMPRESSION, OVERWRITE)),
+                         ColumnStorageAttributes(rowops_.encoding_,
+                                                 DEFAULT_COMPRESSION, OVERWRITE)),
                      ColumnSchema("val_c", rowops_.type_, true, default_ptr, nullptr,
-                         ColumnStorageAttributes(rowops_.encoding_, DEFAULT_COMPRESSION, OVERWRITE))}, 1);
+                         ColumnStorageAttributes(rowops_.encoding_,
+                                                 DEFAULT_COMPRESSION, OVERWRITE))}, 1);
   }
 
   // Scan the results of a query. Set "count" to the number of results satisfying the predicates.

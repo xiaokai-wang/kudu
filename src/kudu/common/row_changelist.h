@@ -31,10 +31,10 @@
 #include "kudu/common/schema.h"
 #include "kudu/gutil/casts.h"
 #include "kudu/gutil/macros.h"
+#include "kudu/tablet/delta_key.h"
 #include "kudu/util/faststring.h"
 #include "kudu/util/slice.h"
 #include "kudu/util/status.h"
-#include "kudu/tablet/delta_key.h"
 
 namespace kudu {
 
@@ -367,7 +367,7 @@ class RowChangeListDecoder {
   // REQUIRES: is_update() or is_reinsert()
   Status ApplyToOneColumn(size_t row_idx, ColumnBlock* dst_col,
                           const Schema& dst_schema, int col_idx, Arena *arena,
-                          tablet::DeltaType deltaType);
+                          tablet::DeltaType delta_type);
 
   // If this changelist is a DELETE or REINSERT, twiddle '*deleted' to reference
   // the new state of the row. If it is an UPDATE, this call has no effect.

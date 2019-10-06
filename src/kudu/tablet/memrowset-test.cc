@@ -439,8 +439,8 @@ TEST_F(TestMemRowSet, TestUpdate) {
 TEST_F(TestMemRowSet, TestMaxUpdate) {
   ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
   columnStorageAttributes.updating = KEEP_MAX;
-  ColumnSchema columnSchema = ColumnSchema("val", UINT32, false, NULL,
-                                           NULL, columnStorageAttributes);
+  ColumnSchema columnSchema = ColumnSchema("val", UINT32, false, nullptr,
+                                           nullptr, columnStorageAttributes);
   SchemaBuilder builder;
   CHECK_OK(builder.AddKeyColumn("key", STRING));
   CHECK_OK(builder.AddColumn(columnSchema, false));
@@ -475,8 +475,8 @@ TEST_F(TestMemRowSet, TestMaxUpdate) {
 TEST_F(TestMemRowSet, TestMinUpdate) {
   ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
   columnStorageAttributes.updating = KEEP_MIN;
-  ColumnSchema columnSchema = ColumnSchema("val", UINT32, false, NULL,
-                                           NULL, columnStorageAttributes);
+  ColumnSchema columnSchema = ColumnSchema("val", UINT32, false, nullptr,
+                                           nullptr, columnStorageAttributes);
   SchemaBuilder builder;
   CHECK_OK(builder.AddKeyColumn("key", STRING));
   CHECK_OK(builder.AddColumn(columnSchema, false));
@@ -511,8 +511,8 @@ TEST_F(TestMemRowSet, TestMinUpdate) {
 TEST_F(TestMemRowSet, TestOverWriteUpdate) {
   ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
   columnStorageAttributes.updating = OVERWRITE;
-  ColumnSchema columnSchema = ColumnSchema("val", UINT32, false, NULL,
-                                           NULL, columnStorageAttributes);
+  ColumnSchema columnSchema = ColumnSchema("val", UINT32, false, nullptr,
+                                           nullptr, columnStorageAttributes);
   SchemaBuilder builder;
   CHECK_OK(builder.AddKeyColumn("key", STRING));
   CHECK_OK(builder.AddColumn(columnSchema, false));
@@ -547,8 +547,8 @@ TEST_F(TestMemRowSet, TestOverWriteUpdate) {
 TEST_F(TestMemRowSet, TestForceOverWriteUpdate) {
   ColumnStorageAttributes columnStorageAttributes = ColumnStorageAttributes();
   columnStorageAttributes.updating = KEEP_MAX;
-  ColumnSchema columnSchema = ColumnSchema("val", UINT32, false, NULL,
-                                           NULL, columnStorageAttributes);
+  ColumnSchema columnSchema = ColumnSchema("val", UINT32, false, nullptr,
+                                           nullptr, columnStorageAttributes);
   SchemaBuilder builder;
   CHECK_OK(builder.AddKeyColumn("key", STRING));
   CHECK_OK(builder.AddColumn(columnSchema, false));

@@ -45,7 +45,6 @@
 #include "kudu/util/faststring.h"
 #include "kudu/util/slice.h"
 #include "kudu/util/status.h"
-#include "key_encoder.h"
 
 // Check that two schemas are equal, yielding a useful error message in the case that
 // they are not.

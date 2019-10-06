@@ -106,7 +106,6 @@
 #include "kudu/util/status_callback.h"
 #include "kudu/util/trace.h"
 #include "kudu/util/trace_metrics.h"
-#include "kudu/util/website_util.h"
 
 DEFINE_int32(scanner_default_batch_size_bytes, 1024 * 1024,
              "The default size for batches of scan results");
